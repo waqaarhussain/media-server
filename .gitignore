@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.env
+*.gpg
+*.db
+*.sqlite3
+state.json
+backups/
+runtime/
+.venv/

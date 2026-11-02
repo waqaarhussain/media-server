@@ -1,0 +1,11 @@
+name: Checks
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and unit tests
+        run: |
+          bash -n bootstrap.sh install.sh scripts/update-live scripts/media-server
+          PYTHONPATH=bot:tests python3 -m unittest discover -s tests -q

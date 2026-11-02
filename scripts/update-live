@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+fi
+exec 9>/run/lock/media-server-update.lock
+flock -n 9 || { echo 'Another media-server update is running.' >&2; exit 1; }
+cd /opt/media-server
+if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
+    echo 'Tracked repository files have local changes. Update stopped.' >&2
+    exit 1
+fi
+git pull --ff-only origin main
+exec python3 /opt/media-server/scripts/manage.py update

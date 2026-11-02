@@ -1,0 +1,24 @@
+[Unit]
+Description=Private Telegram movie request bot
+Wants=network-online.target
+After=network-online.target radarr.service
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+Environment=HOME=@HOME@
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=@HOME@/.local/share/media-request-bot
+ExecStart=/usr/bin/python3 @HOME@/.local/share/media-request-bot/bot.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@HOME@/.local/state/media-request-bot
+
+[Install]
+WantedBy=multi-user.target

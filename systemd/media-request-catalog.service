@@ -1,0 +1,18 @@
+[Unit]
+Description=Refresh IMDb movie recommendations
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@GROUP@
+Environment=HOME=@HOME@
+ExecStart=/usr/bin/python3 @HOME@/.local/share/media-request-bot/catalog.py @HOME@/.local/state/media-request-bot
+TimeoutStartSec=30min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@HOME@/.local/state/media-request-bot
