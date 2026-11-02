@@ -21,20 +21,7 @@ An exact rebuild requires the snapshot from your current VPS. Fresh installers c
 
 ## Current VPS: adopt it, then capture the real settings
 
-This repository is currently private. Authenticate GitHub once on the VPS, then install:
-
-```bash
-sudo apt-get update && sudo apt-get install -y gh git curl
-sudo gh auth login --hostname github.com --git-protocol https --web
-sudo gh auth setup-git
-sudo gh repo clone waqaarhussain/media-server /opt/media-server
-sudo bash /opt/media-server/bootstrap.sh --user appbox
-media-server backup
-```
-
-`update-live` reuses that root-owned GitHub authentication. Never put its token in this repository. If you already have a managed checkout at `/opt/media-server`, skip cloning it again.
-
-The shorter command below applies **only if the repository is made public**:
+This repository is public. No GitHub login or token is needed. Run this as `appbox` on the current VPS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/waqaarhussain/media-server/main/bootstrap.sh -o /tmp/media-server-bootstrap.sh && bash /tmp/media-server-bootstrap.sh
@@ -66,13 +53,7 @@ Use Ubuntu 24.04 or newer, with the same CPU architecture and a C library at lea
 
 1. Copy the encrypted snapshot to the replacement VPS.
 2. Stop the old Telegram bot before starting the replacement: `media-server stop` on the old VPS. One token must have one polling instance.
-3. Install dependencies and restore onto a **fresh** VPS. For a private repository, authenticate and clone as above, then run:
-
-```bash
-sudo bash /opt/media-server/bootstrap.sh --user appbox --restore /path/to/media-server-backup.tar.gz.gpg
-```
-
-If the repository has been made public, the equivalent curl command is:
+3. Install dependencies and restore onto a **fresh** VPS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/waqaarhussain/media-server/main/bootstrap.sh -o /tmp/media-server-bootstrap.sh && bash /tmp/media-server-bootstrap.sh --user appbox --restore /path/to/media-server-backup.tar.gz.gpg
