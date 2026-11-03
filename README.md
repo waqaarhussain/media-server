@@ -84,11 +84,14 @@ Bootstrap can install native Radarr/Prowlarr on a blank VPS, but it cannot recon
 | `media-server backup` | Create an encrypted snapshot, excluding movie files. |
 | `media-server restore FILE.tar.gz.gpg` | Restore to an otherwise fresh installation. |
 | `media-server paths` | Change Movies/Kids Movies paths after storage is mounted. Never move/delete movie files. |
+| `media-server quality` | Add optional Dolby Vision +100 and Dolby Atmos +100 preferences to the bot's existing 4K Balanced profile. |
 | `media-server setup` | Enter missing bot credentials locally. Existing saved credentials are adopted. |
 | `media-server status` | Show the four services and next catalogue refresh. |
 | `media-server stop` / `media-server start` | Stop/start Telegram polling during migration. |
 
 `update-live` does not upgrade Radarr/Prowlarr binaries. Use their native update mechanism and take a fresh snapshot afterward. This avoids silently migrating their databases during bot updates.
+
+Apply Dolby preferences on an existing installation with `update-live && media-server quality`. The helper saves a private copy of the previous profile/custom formats under the bot state directory, adds its two named formats idempotently, and changes their scores only in `4K Balanced`. A release matching both receives +200 from these preferences, on top of its other custom-format scores. Missing Dolby labels remain eligible under the existing rules. Quality selection, minimum score, upgrade settings and file limits stay unchanged; no search or download is started. Search the movie again in Telegram afterward because an open release card contains the earlier scores. Detection uses release-title labels, not inspection of the actual movie. Run `media-server backup` afterward to include the new settings in your migration snapshot.
 
 ## Telegram behaviour preserved
 
