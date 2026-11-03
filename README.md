@@ -95,8 +95,9 @@ Apply Dolby preferences on an existing installation with `update-live && media-s
 
 ## Telegram behaviour preserved
 
-- One visible bot panel with Back/Main menu navigation, full movie title buttons and five search results per page.
-- Movie posters/descriptions for search/recommendations. Plain alphabetical title/year library.
+- One visible bot panel with Back/Main menu navigation, full movie title buttons and five search results per page, ordered by release year from oldest to newest. Unknown years appear last.
+- Movie posters/descriptions come through Radarr's TMDb metadata; IMDb supplies catalogue ratings and identifiers. Selected artwork is preserved when Radarr returns a managed movie without a poster. Missing metadata is retried by the exact TMDb ID, never borrowed from a similarly named film. Missing/unloadable artwork is stated explicitly. Plain alphabetical title/year library.
+- A no-download result confirms that the movie itself was found, shows a compact summary of indexer results/filter failures, and offers retry/back navigation. It does not silently relax the quality, size, approval or seeder rules.
 - Movies/Kids Movies selection; browsing previews are cleaned up; a download needs approval.
 - 4K preferred with 1080p fallback, maximum 25 GiB, positive seeders and title-label quality checks. Existing custom-format scoring remains Radarr's responsibility.
 - Downloads refresh about every five seconds while the progress view is open, using qBittorrent where available and clearly labelled Radarr fallback.
