@@ -591,10 +591,90 @@ def install(cfg, snapshot=None):
     print('Updates: update-live. Recommendation refresh: daily around 04:00 UK time.')
 
 
+DOLBY_FORMATS = (
+    ('Media Server - Dolby Vision', r'(?<![a-z0-9])(?:DV|DoVi|Dolby[ ._-]?Vision)(?![a-z0-9])'),
+    ('Media Server - Dolby Atmos', r'(?<![a-z0-9])Atmos(?![a-z0-9])'),
+)
+
+
+def dolby_quality(cfg):
+    """Add optional positive preferences only to the bot's existing quality profile."""
+    import copy
+    directory = Path(cfg['home']) / '.config/media-request-bot'
+    saved = env_read(directory / 'radarr.env')
+    profile_id = int(saved['RADARR_PROFILE_ID'])
+    profile = api('radarr', 'qualityprofile/' + str(profile_id))
+    if profile.get('name') != '4K Balanced':
+        raise ValueError('The bot is not using 4K Balanced. No profile settings changed.')
+    formats = api('radarr', 'customformat')
+    schemas = api('radarr', 'customformat/schema')
+    if isinstance(schemas, dict):
+        schemas = schemas.get('specifications', [])
+    schema = next((s for s in schemas if s.get('implementation') == 'ReleaseTitleSpecification'), None)
+    if not schema or not any(f.get('name') == 'value' for f in schema.get('fields', [])):
+        raise ValueError('Radarr release-title format schema was not recognised. Nothing changed.')
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    backup_dir = Path(cfg['home']) / '.local/state/media-request-bot/quality-backups'
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir.chmod(0o700)
+    atomic(backup_dir / (stamp + '.json'), json.dumps({'profile': profile, 'customFormats': formats}, indent=2))
+    own(backup_dir, cfg)
+    ids = []
+    for name, pattern in DOLBY_FORMATS:
+        matches = [f for f in formats if f.get('name') == name]
+        if len(matches) > 1:
+            raise ValueError('Duplicate managed Dolby formats found. Review Radarr Custom Formats.')
+        spec = copy.deepcopy(schema)
+        spec.update({'name': name, 'negate': False, 'required': False})
+        for field in spec['fields']:
+            if field.get('name') == 'value':
+                field['value'] = pattern
+        if matches:
+            existing = matches[0]
+            specs = existing.get('specifications') or []
+            correct = len(specs) == 1 and specs[0].get('implementation') == 'ReleaseTitleSpecification'
+            correct = correct and not specs[0].get('negate')
+            correct = correct and any(f.get('name') == 'value' and f.get('value') == pattern
+                                      for f in specs[0].get('fields', []))
+            if not correct:
+                raise ValueError('A managed Dolby format has been edited. Nothing overwritten: ' + name)
+            resource = existing
+        else:
+            resource = api('radarr', 'customformat', {
+                'name': name, 'includeCustomFormatWhenRenaming': False, 'specifications': [spec]}, 'POST')
+            formats.append(resource)
+        ids.append(int(resource['id']))
+    # Re-read after format creation, retaining every current quality, limit and unrelated score.
+    current = api('radarr', 'qualityprofile/' + str(profile_id))
+    if current.get('name') != '4K Balanced':
+        raise ValueError('Profile changed while configuring Dolby. No profile update submitted.')
+    updated = copy.deepcopy(current)
+    items = updated.setdefault('formatItems', [])
+    for iid, (name, _) in zip(ids, DOLBY_FORMATS):
+        item = next((i for i in items if i.get('format') == iid), None)
+        if item is None:
+            items.append({'format': iid, 'name': name, 'score': 100})
+        else:
+            item['score'] = 100
+    if updated != current:
+        api('radarr', 'qualityprofile/' + str(profile_id), updated, 'PUT')
+    verified = api('radarr', 'qualityprofile/' + str(profile_id))
+    if any(not any(i.get('format') == iid and i.get('score') == 100
+                   for i in verified.get('formatItems', [])) for iid in ids):
+        raise RuntimeError('Could not verify saved Dolby scores. Review 4K Balanced in Radarr.')
+    for key in ('items', 'upgradeAllowed', 'cutoff', 'minFormatScore', 'cutoffFormatScore',
+                'minUpgradeFormatScore', 'language'):
+        if verified.get(key) != current.get(key):
+            raise RuntimeError('Other profile settings changed during verification. Review Radarr before downloading.')
+    print('4K Balanced saved: Dolby Vision +100; Dolby Atmos +100; both matching adds +200.')
+    print('Optional preferences. Existing qualities, minimum score, limits and upgrade settings preserved.')
+    print('Search the movie again in Telegram to refresh the release scores. No downloads were started.')
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('install', 'update', 'backup', 'restore', 'paths', 'setup', 'status', 'start', 'stop'))
+    parser.add_argument('command', choices=('install', 'update', 'backup', 'restore', 'paths', 'setup', 'status', 'start', 'stop', 'quality'))
     parser.add_argument('filename', nargs='?')
     parser.add_argument('--restore', dest='snapshot')
     parser.add_argument('--user')
@@ -617,6 +697,8 @@ def main():
         restore(cfg, args.filename)
     elif args.command == 'paths':
         paths(cfg)
+    elif args.command == 'quality':
+        dolby_quality(cfg)
     elif args.command == 'setup':
         setup(cfg)
         deploy_bot(cfg)
