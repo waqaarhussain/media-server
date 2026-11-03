@@ -164,6 +164,56 @@ def choose_releases(releases):
     return list(unique.values())[:15], bool(uhd)
 
 
+def poster_url(movie):
+    candidates = [movie.get('remotePoster')]
+    for item in movie.get('images') or []:
+        if item.get('coverType') == 'poster':
+            candidates.extend((item.get('remoteUrl'), item.get('url')))
+    for url in candidates:
+        if isinstance(url, str):
+            if url.startswith('http://image.tmdb.org/'):
+                url = 'https://' + url[len('http://'):]
+            if url.startswith('https://'):
+                return url
+    return None
+
+
+def merge_movie_metadata(movie, source):
+    """Keep Radarr's managed identity/state; fill display metadata for the exact same movie."""
+    result = dict(movie)
+    if not movie.get('tmdbId') or movie.get('tmdbId') != source.get('tmdbId'):
+        return result
+    for key in ('remotePoster', 'images', 'overview', 'imdbId', 'runtime', 'genres', 'ratings', 'year'):
+        if not result.get(key) and source.get(key):
+            result[key] = source[key]
+    if not poster_url(result) and poster_url(source):
+        result['remotePoster'] = poster_url(source)
+    return result
+
+
+def movie_year(movie):
+    try:
+        year = int(movie.get('year') or 0)
+        return year if year > 0 else 9999
+    except (ValueError, TypeError):
+        return 9999
+
+
+def release_search_summary(releases):
+    if not releases:
+        return 'Your configured indexers returned no download releases for this movie.'
+    counts = [
+        ('not approved by Radarr', sum(r.get('approved') is not True or r.get('downloadAllowed') is not True
+            or bool(r.get('rejected') or r.get('temporarilyRejected') or r.get('rejections')) for r in releases)),
+        ('outside the size limit', sum(not 0 < (r.get('size') or 0) <= 25*1024**3 for r in releases)),
+        ('no reported seeders', sum((r.get('seeders') or 0) <= 0 for r in releases)),
+        ('unsupported quality', sum(r.get('quality', {}).get('quality', {}).get('name') not in QUALITIES for r in releases)),
+    ]
+    reasons = [f'{count} {label}' for label, count in counts if count]
+    return (f'{len(releases)} releases returned. ' + '; '.join(reasons[:3]) +
+            ('. Reasons can overlap.' if reasons else '. None passed the current download rules.'))
+
+
 def release_details(release):
     """Describe title labels conservatively; missing labels stay unknown."""
     title = release.get("title") or ""
@@ -324,12 +374,10 @@ class Bot:
         if not markup['inline_keyboard']:
             markup = self.back_controls()
         ui = self.state.get('ui')
-        poster = (movie or {}).get('remotePoster') or next(
-            (i.get('remoteUrl') for i in ((movie or {}).get('images') or [])
-             if i.get('coverType')=='poster' and i.get('remoteUrl')),None)
-        if not poster or not poster.startswith('https://'):
-            poster = None
+        poster = poster_url(movie or {})
         photo = bool(poster)
+        if movie and not poster:
+            text = text.rstrip() + '\n\nPoster unavailable for this title.'
         text = text[:1000] if photo else text[:4000]
         signature = json.dumps([text,markup,poster],sort_keys=True)
         self.state['view'] = view or {'route':'static'}
@@ -370,6 +418,8 @@ class Bot:
                 if error.status not in (400,404):
                     raise
         if sent is None:
+            if movie and poster:
+                text = text.rstrip() + '\n\nPoster could not be loaded.'
             sent = self.tg('sendMessage',dict(payload,text=text,link_preview_options={'is_disabled':True}))
         if isinstance(sent,dict) and sent.get('message_id'):
             self.state['ui'] = {'message_id':sent['message_id'],'photo':new_photo,
@@ -1174,7 +1224,7 @@ class Bot:
         releases = s['releases']
         index = max(1,min(1+page,len(releases)-1))
         if len(releases)<2:
-            self.panel('No other eligible versions found.',[('‹ Back','back')])
+            self.panel('No other eligible versions found.',[('‹ Back','back')], movie=s['movie'])
             return
         choices = [('Use this version',f'use:{index}'),('Technical details',f'details:{index}')]
         if index>1:
@@ -1182,7 +1232,7 @@ class Bot:
         if index+1<len(releases):
             choices.append(('Next version',f'others:{index}'))
         choices += [('‹ Back to selected version','back'),('Main menu','home')]
-        self.panel(self.version_text(s['movie'],releases[index],f'Alternative {index} of {len(releases)-1}'),choices)
+        self.panel(self.version_text(s['movie'],releases[index],f'Alternative {index} of {len(releases)-1}'),choices,movie=s['movie'])
 
     def clear_alternatives(self):
         for mid in self.state.pop("alt_messages",[]):
@@ -1282,6 +1332,7 @@ class Bot:
             if term == query and len(movies) >= 8:
                 break
         candidates = sorted(found.values(), key=lambda m: title_score(query, m), reverse=True)[:50]
+        candidates.sort(key=lambda m: (movie_year(m), -title_score(query, m), normal(m.get('title'))))
         if not candidates:
             self.panel("No movie titles found. Try fewer words or correct the spelling.")
             return
@@ -1298,7 +1349,21 @@ class Bot:
             choices.append(('Previous',f'searchpage:{page-1}'))
         if (page+1)*5<len(movies):
             choices.append(('Next',f'searchpage:{page+1}'))
-        self.panel('🎬 Which movie?',choices)
+        self.panel('🎬 Which movie?\nOldest release year first.',choices)
+
+    def selected_movie_metadata(self, movie):
+        if poster_url(movie) and movie.get('overview'):
+            return movie
+        term = 'tmdb:' + str(movie['tmdbId'])
+        try:
+            matches = self.rad('movie/lookup?' + urllib.parse.urlencode({'term': term}), timeout=15)
+            if isinstance(matches, list):
+                exact = next((m for m in matches if m.get('tmdbId') == movie.get('tmdbId')), None)
+                if exact:
+                    return merge_movie_metadata(movie, exact)
+        except ServiceError:
+            pass  # Missing art must not prevent browsing or cause a different film to be selected.
+        return movie
 
     def search_releases(self, candidate):
         if any(p['identity'].get('tmdbId')==candidate.get('tmdbId') for p in self.state['deletions'].values()):
@@ -1308,6 +1373,7 @@ class Bot:
         existing = self.rad("movie?" + urllib.parse.urlencode({"tmdbId": candidate["tmdbId"]}))
         movie = next((m for m in existing if m["tmdbId"] == candidate["tmdbId"]), None)
         if movie:
+            movie = merge_movie_metadata(movie, candidate)
             if movie.get("hasFile"):
                 self.panel(f"✅ {movie['title']} ({movie.get('year','?')})\n\nAlready in your library.", movie=movie)
                 return
@@ -1325,15 +1391,16 @@ class Bot:
                             "addOptions": {"searchForMovie": False}})
             movie = self.rad("movie", payload)
             self.remember_preview(movie)
+            movie = merge_movie_metadata(movie, candidate)
         movie_id = str(movie["id"])
         if movie_id in self.state["jobs"]:
             self.panel(f"⬇️ {movie['title']}\n\nAlready requested. Check its progress below.",
-                       controls=self.progress_controls(movie_id))
+                       controls=self.progress_controls(movie_id), movie=movie)
             return
         queue = self.rad("queue?" + urllib.parse.urlencode({"pageSize": 1000, "includeUnknownMovieItems": "false"}))
         if any(q.get("movieId") == movie["id"] for q in queue.get("records", [])):
             self.panel(f"⬇️ {movie['title']}\n\nAlready in your download queue.",
-                       controls=self.progress_controls(movie_id))
+                       controls=self.progress_controls(movie_id), movie=movie)
             return
         self.panel(f"🔎 {movie['title']} ({movie.get('year','?')})\n\nFinding a suitable version…", movie=movie)
         releases = self.rad("release?movieId=" + movie_id, timeout=180)
@@ -1341,9 +1408,13 @@ class Bot:
         if not chosen:
             self.session("watch_offer", movie=movie)
             self.panel(f"🎬 {movie['title']} ({movie.get('year','?')})\n\n"
-                       "No suitable 4K or 1080p version found.\n\n"
-                       "Notify you when an eligible version appears? This won’t start a download.",
-                       [("Notify me when available", "watch"), ("Cancel", "cancel")],movie)
+                       + ((movie.get('overview') or '')[:200] + '\n\n' if movie.get('overview') else '')
+                       + "Movie found. No suitable 4K or 1080p download matched your rules.\n\n"
+                       + release_search_summary(releases) + '\n\n'
+                       + 'Try another title/year if this is not the film you meant.\n\n'
+                       + "Notify you when an eligible version appears? This won’t start a download.",
+                       [("Search again", "retry"), ("‹ Back to movie results", "results"),
+                        ("Notify me when available", "watch"), ("Cancel", "cancel")],movie)
             return
         self.show_recommendation(movie, chosen, uhd)
 
@@ -1371,7 +1442,7 @@ class Bot:
             self.session('recommend',genre=saved['genre'],deck=saved['deck'],index=saved['index'])
             self.show_random_pick()
         elif kind == "movie" and s["stage"] == "movie":
-            movie = s["movies"][int(number)]
+            movie = self.selected_movie_metadata(s["movies"][int(number)])
             self.state["session"] = None
             self.save()
             self.search_releases(movie)
@@ -1391,11 +1462,13 @@ class Bot:
                      f"Reported seeders: {r.get('seeders', 0)}\n"
                      f"Preference score: {r.get('customFormatScore', 0)}\n\n"
                      "These are release-listing details; the file has not been inspected.",
-                     [("Use this version", f"use:{number}"), ("Back", "back")])
+                     [("Use this version", f"use:{number}"), ("Back", "back")], movie=s['movie'])
         elif kind == "use" and s["stage"] == "confirm":
             selected = int(number)
             s["releases"][selected]  # Validate before changing state.
             self.show_download_card(s["movie"], s["releases"], selected, s["uhd"], s["root"])
+        elif kind == 'retry' and s['stage'] == 'watch_offer':
+            self.search_releases(self.selected_movie_metadata(s['movie']))
         elif kind == "watch" and s["stage"] == "watch_offer":
             movie = s["movie"]
             tid = str(movie["tmdbId"])
