@@ -141,13 +141,13 @@ def deploy_bot(cfg, start=True):
         directory.chmod(0o700)
         os.chown(directory, cfg['uid'], cfg['gid'])
     # Compile before stopping the installed bot. Download, watch and deletion ledgers survive.
-    for name in ('bot.py', 'catalog.py'):
+    for name in ('bot.py', 'catalog.py', 'year_adapter.py'):
         source = (REPO / 'bot' / name).read_text()
         compile(source, name, 'exec')
     was_running = active('media-request-bot.service')
     if was_running:
         run(['systemctl', 'stop', 'media-request-bot.service'])
-    for name in ('bot.py', 'catalog.py'):
+    for name in ('bot.py', 'catalog.py', 'year_adapter.py'):
         if (target / name).exists():
             shutil.copy2(target / name, target / (name + '.previous'))
         atomic(target / name, (REPO / 'bot' / name).read_text())
@@ -674,7 +674,7 @@ def dolby_quality(cfg):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('install', 'update', 'backup', 'restore', 'paths', 'setup', 'status', 'start', 'stop', 'quality', 'indexers', 'indexers-undo', 'indexers-check'))
+    parser.add_argument('command', choices=('install', 'update', 'backup', 'restore', 'paths', 'setup', 'status', 'start', 'stop', 'quality', 'indexers', 'indexers-undo', 'indexers-check', 'years', 'years-undo'))
     parser.add_argument('filename', nargs='?')
     parser.add_argument('--restore', dest='snapshot')
     parser.add_argument('--user')
@@ -702,6 +702,9 @@ def main():
     elif args.command == 'indexers-check':
         from public_indexers import diagnose
         diagnose(api)
+    elif args.command in ('years', 'years-undo'):
+        import year_setup
+        year_setup.operate(cfg, sys.modules[__name__], undo=args.command == 'years-undo')
     elif args.command in ('indexers', 'indexers-undo'):
         from public_indexers import operate
         operate(cfg, api, atomic, own, undo=args.command == 'indexers-undo')
