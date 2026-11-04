@@ -91,6 +91,7 @@ Each batch uses a private journal under the bot state directory (included in bac
 | `media-server quality` | Add optional Dolby Vision +100 and Dolby Atmos +100 preferences to the bot's existing 4K Balanced profile. |
 | `media-server indexers` | Test and add public English torrent sources supporting Movies/TV, with an undo journal. |
 | `media-server indexers-undo` | Remove only sources added by that batch, preserving all pre-existing sources including Knaben. |
+| `media-server indexers-check` | Read-only Insidious diagnostic: show Radarr source flags/categories/status and compare Pirate Bay movie searches with/without years. Never grabs or changes settings. |
 | `media-server setup` | Enter missing bot credentials locally. Existing saved credentials are adopted. |
 | `media-server status` | Show the four services and next catalogue refresh. |
 | `media-server stop` / `media-server start` | Stop/start Telegram polling during migration. |
