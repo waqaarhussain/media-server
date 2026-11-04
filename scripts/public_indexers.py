@@ -145,12 +145,17 @@ def operate(cfg, api, atomic, own, undo=False):
             added = api('prowlarr', 'indexer', payload, 'POST')
         except Exception:
             raise ValueError('Add did not return a confirmed result. Stopped safely; run media-server indexers-undo to reconcile and undo this batch.') from None
-        state['added'].append({'id': added['id'], 'signature': signature(added)})
+        state['added'].append({'id': added['id'], 'name': source['name'], 'signature': signature(added)})
         state['pending'] = None
         save()
         known.add(identity(source))
         print('Added: ' + source['name'], flush=True)
     sync()
     print(f"Added {len(state['added'])} sources. Existing indexers and quality rules preserved.")
+    print('\nSources added by this batch:')
+    for entry in state['added']:
+        print('  - ' + entry['name'])
+    if not state['added']:
+        print('  None. All candidates were already configured or failed testing.')
     print('Undo this batch: media-server indexers-undo')
     print('English is the source language; individual releases may contain other audio languages.')
