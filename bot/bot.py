@@ -1206,11 +1206,17 @@ class Bot:
         heading += f" · {resolution}"
         text = self.version_text(movie, r, heading) + (
             f"\n📁 {'Kids Movies' if kids else 'Movies'}")
-        self.panel(text, [("Download", "download"),
-                          ("Switch to Movies" if kids else "Switch to Kids Movies", "toggle"),
-                          ("Other versions", "others:0"), ("Technical details", f"details:{selected}"),
-                          ("‹ Back to recommendations" if self.state.get("recommend_return") else "‹ Back to search results",
-                           "recback" if self.state.get("recommend_return") else "results")], movie)
+        nonce = self.state['session']['nonce']
+        def button(label, action):
+            return {'text':label, 'callback_data':f'{nonce}:{action}'}
+        controls = {'inline_keyboard':[
+            [button('Download', 'download'),
+             button('Save to Movies' if kids else 'Save to Kids', 'toggle')],
+            [button('Other versions', 'others:0'),
+             button('Technical details', f'details:{selected}')],
+            [{'text':'Main menu', 'callback_data':'global:home'}]
+        ]}
+        self.panel(text, movie=movie, controls=controls)
 
     def show_alternatives(self, page):
         self.clear_alternatives()
