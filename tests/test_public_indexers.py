@@ -116,8 +116,6 @@ class PublicIndexerTests(unittest.TestCase):
         target = source('The Pirate Bay', id=16)
         queries = []
         def api(app, endpoint):
-            if app == 'radarr' and endpoint == 'indexerstatus':
-                return [{'indexerId': 1, 'disabledTill': '2026-11-04T01:00:00Z'}]
             if app == 'radarr':
                 self.assertEqual(endpoint, 'indexer')
                 return [dict(self.original, enableAutomaticSearch=True, enableInteractiveSearch=True)]
