@@ -1726,6 +1726,13 @@ def main():
     directory.mkdir(parents=True, exist_ok=True)
     with open(directory / "process.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        adapter_config = Path.home() / '.config/media-request-bot/year-adapter.json'
+        if adapter_config.exists():
+            try:
+                from year_adapter import start
+                start(adapter_config, directory / 'catalog.sqlite3')
+            except Exception as error:
+                print('Verified-year adapter unavailable: ' + type(error).__name__ + '. Bot continuing.', flush=True)
         Bot(config, directory).run()
 
 
