@@ -1190,8 +1190,7 @@ class Bot:
         return (f"{heading}\n" if heading else "") + (
             f"🎬 {movie['title']} ({movie.get('year', '?')})\n\n"
             f"📺 {resolution} · {source}\n🎨 {colour}\n🔊 {audio}\n"
-            f"💾 {release['size']/1024**3:.1f} GiB\n\n"
-            "Audio/HDR based on release labels.")
+            f"💾 {release['size']/1024**3:.1f} GiB")
 
     def show_recommendation(self, movie, releases, uhd):
         self.show_download_card(movie, releases, 0, uhd, self.c["RADARR_MOVIES_ROOT"])
@@ -1203,15 +1202,10 @@ class Bot:
                      selected=selected, uhd=uhd, root=root)
         kids = root == self.c["RADARR_KIDS_ROOT"]
         heading = "Recommended version" if selected == 0 else "Selected alternative"
-        if not uhd:
-            heading += " · 1080p fallback"
         resolution, source, colour, audio = release_details(r)
-        why = f"{resolution}, within your size limit"
-        if colour != "Unknown":
-            why += ", HDR/colour format labelled" if colour != "SDR" else ", SDR labelled"
+        heading += f" · {resolution}"
         text = self.version_text(movie, r, heading) + (
-            f"\n\n📁 {'Kids Movies' if kids else 'Movies'}\n"
-            f"Selected for: {why}.\n\nDownload starts only when you approve.")
+            f"\n📁 {'Kids Movies' if kids else 'Movies'}")
         self.panel(text, [("Download", "download"),
                           ("Switch to Movies" if kids else "Switch to Kids Movies", "toggle"),
                           ("Other versions", "others:0"), ("Technical details", f"details:{selected}"),
@@ -1670,6 +1664,13 @@ class Bot:
             self.end_browse()
             self.retire_panel()
             self.find_movies(text)
+            # Keep the reusable menu clean after a successfully processed search.
+            if message.get('message_id'):
+                try:
+                    self.tg('deleteMessage', {'chat_id':self.chat,
+                                              'message_id':message['message_id']})
+                except ServiceError:
+                    pass
 
     def check_imports(self):
         self.check_downloads()
