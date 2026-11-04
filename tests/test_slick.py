@@ -35,7 +35,9 @@ class SlickTests(unittest.TestCase):
         self.assertEqual(self.bot.state['session']['root'],self.config['RADARR_MOVIES_ROOT'])
         markup=self.bot.tg.call_args.args[1]['reply_markup']['inline_keyboard']
         self.assertEqual(markup[0][0]['text'],'Download')
-        self.assertEqual(markup[1][0]['text'],'Switch to Kids Movies')
+        self.assertEqual([[button['text'] for button in row] for row in markup],
+                         [['Download', 'Save to Kids'],
+                          ['Other versions', 'Technical details'], ['Main menu']])
         self.bot.rad.assert_not_called()
 
     def test_destination_toggle_is_local_until_download(self):
