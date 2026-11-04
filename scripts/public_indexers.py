@@ -38,11 +38,9 @@ def probe_feed(indexer_id, search_type, query):
 def diagnose(api, probe=probe_feed):
     print('READ-ONLY diagnostic: no settings changes, grabs or downloads.', flush=True)
     indexers = api('radarr', 'indexer')
-    statuses = {s['indexerId']: s for s in api('radarr', 'indexerstatus')}
     print('\nRadarr sources:', flush=True)
     for r in indexers:
-        status = statuses.get(r['id'], {})
-        print(f"  {r['name']}: automatic={r.get('enableAutomaticSearch')} interactive={r.get('enableInteractiveSearch')} disabledUntil={status.get('disabledTill', 'none')}", flush=True)
+        print(f"  {r['name']}: automatic={r.get('enableAutomaticSearch')} interactive={r.get('enableInteractiveSearch')}", flush=True)
         cats = next((f.get('value') for f in r.get('fields', []) if f['name'] == 'categories'), [])
         remove_year = next((f.get('value') for f in r.get('fields', []) if f['name'] == 'removeYear'), None)
         print(f'    categories={cats}; removeYear={remove_year}', flush=True)
