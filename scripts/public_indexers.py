@@ -2,8 +2,22 @@
 import copy
 import datetime
 import json
+import re
 import uuid
 from pathlib import Path
+
+# Category labels alone are insufficient: adult/anime definitions sometimes map
+# their entire catalogue to Movies or TV. Unknown definitions fail closed.
+GENERAL_SOURCES = {
+    '1337x', 'thepiratebay', 'limetorrents', 'yts', 'eztv', 'showrss',
+    'torrentdownload', 'torrentdownloads', 'kickasstorrentsto',
+    'kickasstorrentsws', 'extratorrentst',
+}
+
+
+def general_source(resource):
+    name = re.sub(r'[^a-z0-9]', '', resource.get('name', '').lower())
+    return name in GENERAL_SOURCES
 
 
 def categories(nodes):
@@ -19,7 +33,8 @@ def allowed_category(value):
 
 
 def candidate(resource):
-    return (str(resource.get('privacy', '')).lower() == 'public'
+    return (general_source(resource)
+            and str(resource.get('privacy', '')).lower() == 'public'
             and str(resource.get('protocol', '')).lower() == 'torrent'
             and str(resource.get('language', '')).lower().split('-')[0] == 'en'
             and resource.get('supportsSearch') is True
@@ -125,7 +140,8 @@ def operate(cfg, api, atomic, own, undo=False):
     profile = api('prowlarr', 'appprofile', {'name': state['profileName'],
                   'enableRss': False, 'enableAutomaticSearch': True,
                   'enableInteractiveSearch': True, 'minimumSeeders': 1}, 'POST')
-    print(f'Testing {len(options)} public English movie/TV sources. RSS is disabled for these additions.', flush=True)
+    print(f'Testing {len(options)} selected public English movie/TV sources. RSS is disabled for these additions.', flush=True)
+    print('Only the reviewed general movie/TV source list is eligible; adult/anime specialists are excluded.', flush=True)
     for source in options:
         if identity(source) in known:
             continue
@@ -136,8 +152,11 @@ def operate(cfg, api, atomic, own, undo=False):
         print('Testing: ' + source['name'], flush=True)
         try:
             api('prowlarr', 'indexer/test', payload, 'POST')
-        except Exception:
-            print('Skipped: failed test, blocked, or requires extra setup.', flush=True)
+        except Exception as error:
+            # Expose only a status code, never raw responses, URLs or credentials.
+            status = re.search(r'HTTP (\d{3})', str(error))
+            suffix = ' (HTTP ' + status.group(1) + ')' if status else ''
+            print('Skipped: test failed' + suffix + '. See Prowlarr System > Events for the reason.', flush=True)
             continue
         state['pending'] = {'name': payload['name'], 'identity': list(identity(payload))}
         save()
