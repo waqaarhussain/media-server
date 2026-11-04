@@ -623,6 +623,12 @@ class Bot:
         view = self.state.get('view') or {}
         return view.get('route')=='detail' or (view.get('route')=='list' and view.get('mode')=='downloads')
 
+    @staticmethod
+    def job_has_file(movie, job):
+        return bool(movie.get('hasFile') and movie.get('movieFileId') and
+                    (not job.get('upgradeFromFileId') or
+                     movie['movieFileId'] != job['upgradeFromFileId']))
+
     def show_downloads(self, page=0, library=False, manage=False):
         if manage:
             self.prompt_delete()
@@ -640,7 +646,7 @@ class Bot:
             ids = [mid for mid,m in movies.items() if m.get('hasFile')]
         else:
             ids = [mid for mid,m in movies.items() if mid in grouped or (
-                mid in self.state['jobs'] and not m.get('hasFile') and
+                mid in self.state['jobs'] and not self.job_has_file(m, self.state['jobs'][mid]) and
                 self.state['jobs'][mid].get('status') != 'imported') or mid in self.state['deletions'] or
                 (manage and m.get('hasFile'))]
         ids.sort(key=lambda mid: (movies[mid].get('title') or '').casefold())
@@ -671,14 +677,15 @@ class Bot:
         rows = []
         for mid in visible:
             movie = movies[mid]
-            label = ('Ready in your library' if movie.get('hasFile') else
+            pending_upgrade = self.state['jobs'].get(mid, {}).get('upgradeFromFileId') and self.state['jobs'][mid].get('status') != 'imported'
+            label = ('Ready in your library' if movie.get('hasFile') and not pending_upgrade else
                      live.get(mid) or '\n'.join(self.queue_label(q) for q in grouped.get(mid,[])) or
                      'Not in the queue. Check Radarr before retrying.')
             if mid in self.state['deletions']:
                 label = 'Removal pending verification.'
             token = self.movie_target(movie)
             title = f"{movie['title']} ({movie.get('year','?')})"
-            short_status = '✅' if movie.get('hasFile') else label.split('\n')[0]
+            short_status = '✅' if movie.get('hasFile') and not pending_upgrade else label.split('\n')[0]
             label = title[:30]+' · '+short_status[:26] if len(short_status)>1 else title[:56]+' '+short_status
             rows.append([{'text':label[:60],'callback_data':'global:item:'+token}])
         if not library:
@@ -716,12 +723,16 @@ class Bot:
                 return
             raise
         queue = [q for q in self.full_queue() if q.get('movieId')==movie['id']]
-        live = self.live_downloads(queue) if not movie.get('hasFile') else {}
-        ready = bool(movie.get('hasFile'))
+        job = self.state['jobs'].get(str(movie['id']), {})
+        upgrading = bool(job.get('upgradeFromFileId') and job.get('status') != 'imported')
+        ready = bool(movie.get('hasFile') and not upgrading)
+        live = self.live_downloads(queue) if not ready else {}
         label = '' if ready else live.get(str(movie['id'])) or '\n'.join(self.queue_label(q) for q in queue) or 'Not in the active queue.'
         if str(movie['id']) in self.state['deletions']:
             label = 'Removal pending. Refresh to check verification or retry Delete.'
         rows = [[{'text':'🗑 Delete movie','callback_data':'global:delete:'+token}]]
+        if ready:
+            rows.insert(0, [{'text':'Find better version','callback_data':'global:upgrade:'+token}])
         if not ready:
             label += '\n\n'+self.live_stamp(bool(live))+'\nAuto-refresh about every 5 seconds.'
             rows.append([{'text':'🔄 Refresh','callback_data':'global:detail:'+token}])
@@ -1126,7 +1137,7 @@ class Bot:
                 self.save()
                 continue
             job['identity'] = identity
-            if movie.get("hasFile") and movie.get("movieFileId",0):
+            if self.job_has_file(movie, job):
                 text = f"✅ {job['title']} is ready\n\nImported into your library.\n\nRefresh Infuse if it hasn’t appeared yet."
                 self.publish_job(job,text,mid)
                 if not job.get("ready_notified"):
@@ -1223,7 +1234,8 @@ class Bot:
             f"💾 {release['size']/1024**3:.1f} GiB")
 
     def show_recommendation(self, movie, releases, uhd):
-        self.show_download_card(movie, releases, 0, uhd, self.c["RADARR_MOVIES_ROOT"])
+        root = str(Path(movie['path']).parent) if movie.get('hasFile') else self.c["RADARR_MOVIES_ROOT"]
+        self.show_download_card(movie, releases, 0, uhd, root)
 
     def show_download_card(self, movie, releases, selected, uhd, root):
         self.clear_alternatives()
@@ -1236,12 +1248,16 @@ class Bot:
         heading += f" · {resolution}"
         text = self.version_text(movie, r, heading) + (
             f"\n📁 {'Kids Movies' if kids else 'Movies'}")
+        upgrading = bool(movie.get('hasFile'))
+        if upgrading:
+            text += '\n\nCurrent: '+library_quality(movie)+'\nReplaces your current version on import.'
         nonce = self.state['session']['nonce']
         def button(label, action):
             return {'text':label, 'callback_data':f'{nonce}:{action}'}
         controls = {'inline_keyboard':[
-            [button('Download', 'download'),
-             button('Save to Movies' if kids else 'Save to Kids', 'toggle')],
+            ([button('Download replacement', 'download')] if upgrading else
+             [button('Download', 'download'),
+              button('Save to Movies' if kids else 'Save to Kids', 'toggle')]),
             [button('Other versions', 'others:0'),
              button('Technical details', f'details:{selected}')],
             [{'text':'Main menu', 'callback_data':'global:home'}]
@@ -1395,7 +1411,7 @@ class Bot:
             pass  # Missing art must not prevent browsing or cause a different film to be selected.
         return movie
 
-    def search_releases(self, candidate):
+    def search_releases(self, candidate, upgrade=False):
         if any(p['identity'].get('tmdbId')==candidate.get('tmdbId') for p in self.state['deletions'].values()):
             self.say('This movie has a removal pending. Open Downloads before requesting it again.',status_button=True)
             return
@@ -1404,8 +1420,15 @@ class Bot:
         movie = next((m for m in existing if m["tmdbId"] == candidate["tmdbId"]), None)
         if movie:
             movie = merge_movie_metadata(movie, candidate)
-            if movie.get("hasFile"):
-                self.panel(f"✅ {movie['title']} ({movie.get('year','?')})\n\nAlready in your library.", movie=movie)
+            if movie.get("hasFile") and not upgrade:
+                token = self.movie_target(movie)
+                self.panel(f"✅ {movie['title']} ({movie.get('year','?')})\n\nAlready in your library.\n"
+                           + library_quality(movie), movie=movie, controls={'inline_keyboard':[
+                               [{'text':'Find better version','callback_data':'global:upgrade:'+token}],
+                               [{'text':'Main menu','callback_data':'global:home'}]]})
+                return
+            if upgrade and (not movie.get('hasFile') or not movie.get('movieFileId')):
+                self.say('The existing file changed. Search the movie again.')
                 return
             if movie["qualityProfileId"] != profile:
                 self.say("This movie uses a different quality profile. Set it to 4K Balanced in Radarr first.")
@@ -1423,7 +1446,7 @@ class Bot:
             self.remember_preview(movie)
             movie = merge_movie_metadata(movie, candidate)
         movie_id = str(movie["id"])
-        if movie_id in self.state["jobs"]:
+        if movie_id in self.state["jobs"] and self.state['jobs'][movie_id].get('status') != 'imported':
             self.panel(f"⬇️ {movie['title']}\n\nAlready requested. Check its progress below.",
                        controls=self.progress_controls(movie_id), movie=movie)
             return
@@ -1436,6 +1459,12 @@ class Bot:
         releases = self.rad("release?movieId=" + movie_id, timeout=180)
         chosen, uhd = choose_releases(releases)
         if not chosen:
+            if upgrade:
+                self.panel(f"🎬 {movie['title']} ({movie.get('year','?')})\n\nCurrent: {library_quality(movie)}\n\n"
+                           'No eligible upgrade found. Your current file is unchanged.\n\n'
+                           + release_search_summary(releases)+'\n\nRadarr’s upgrade and quality-profile rules still apply.',
+                           movie=movie)
+                return
             self.session("watch_offer", movie=movie)
             self.panel(f"🎬 {movie['title']} ({movie.get('year','?')})\n\n"
                        + ((movie.get('overview') or '')[:200] + '\n\n' if movie.get('overview') else '')
@@ -1481,6 +1510,8 @@ class Bot:
         elif kind == "back" and s["stage"] == "confirm":
             self.show_download_card(s["movie"], s["releases"], s["selected"], s["uhd"], s["root"])
         elif kind == "toggle" and s["stage"] == "confirm":
+            if s['movie'].get('hasFile'):
+                return
             root = self.c["RADARR_KIDS_ROOT"] if s["root"] == self.c["RADARR_MOVIES_ROOT"] else self.c["RADARR_MOVIES_ROOT"]
             self.show_download_card(s["movie"], s["releases"], s["selected"], s["uhd"], root)
         elif kind == "others" and s["stage"] == "confirm":
@@ -1529,12 +1560,15 @@ class Bot:
             self.clear_alternatives()
             self.panel(f"⏳ {movie['title']}\n\nChecking the selected version before submitting…")
             mid = str(movie["id"])
-            if mid in self.state["jobs"]:
+            if mid in self.state["jobs"] and self.state['jobs'][mid].get('status') != 'imported':
                 self.say("This movie already has a tracked request. Send /status.")
                 return
             current = self.rad("movie/" + mid)
             queue = self.rad("queue?pageSize=1000")
-            if (current.get("hasFile") or current.get("path") != movie.get("path")
+            upgrading = bool(movie.get('hasFile'))
+            file_changed = (not current.get('hasFile') or not movie.get('movieFileId') or
+                            current.get('movieFileId') != movie.get('movieFileId')) if upgrading else current.get('hasFile')
+            if (file_changed or self.movie_identity(current) != self.movie_identity(movie)
                     or current.get("qualityProfileId") != int(self.c["RADARR_PROFILE_ID"])
                     or any(q.get("movieId") == movie["id"] for q in queue.get("records", []))):
                 self.end_browse()
@@ -1551,6 +1585,10 @@ class Bot:
             root = s["root"]
             if root not in (self.c["RADARR_MOVIES_ROOT"], self.c["RADARR_KIDS_ROOT"]):
                 raise ServiceError("Unexpected destination.")
+            if upgrading and root != str(Path(current['path']).parent):
+                self.end_browse()
+                self.say('Replacement downloads must keep the existing movie folder.')
+                return
             desired_path = str(Path(root) / Path(current["path"]).name)
             if desired_path != current["path"]:
                 # No video file or queued download exists; update only the library destination.
@@ -1559,6 +1597,8 @@ class Bot:
                 self.rad("movie/" + mid + "?moveFiles=false", changed, method="PUT")
             job = {"title": movie["title"], "started": time.time(), "status": "submitting",
                    "identity":self.movie_identity(dict(current,path=desired_path)),"infoHash":r.get('infoHash')}
+            if upgrading:
+                job['upgradeFromFileId'] = current['movieFileId']
             self.state["jobs"][str(movie["id"])] = job
             self.state["previews"].pop(mid, None)
             self.state["session"] = None
@@ -1617,6 +1657,13 @@ class Bot:
                 _,mode,page = data.split(':',2)
                 self.check_deletions()
                 self.show_downloads(int(page),library=mode=='library',manage=mode=='manage')
+                return
+            if data.startswith('global:upgrade:'):
+                identity = self.state['movie_targets'].get(data.split(':',2)[2])
+                if not identity:
+                    self.say('That movie button expired. Search the movie again.')
+                    return
+                self.search_releases(self.safe_movie(identity), upgrade=True)
                 return
             if data.startswith('global:delete:'):
                 self.ask_delete(data.split(':',2)[2])
