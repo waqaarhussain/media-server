@@ -91,7 +91,9 @@ Each batch uses a private journal under the bot state directory (included in bac
 | `media-server quality` | Add optional Dolby Vision +100 and Dolby Atmos +100 preferences to the bot's existing 4K Balanced profile. |
 | `media-server indexers` | Test and add public English torrent sources supporting Movies/TV, with an undo journal. |
 | `media-server indexers-undo` | Remove only sources added by that batch, preserving all pre-existing sources including Knaben. |
-| `media-server indexers-check` | Read-only Insidious diagnostic: show Radarr source flags/categories/status and compare Pirate Bay movie searches with/without years. Never grabs or changes settings. |
+| `media-server indexers-check` | Read-only Insidious diagnostic: show Radarr source flags/categories and compare Pirate Bay movie searches with/without years. Never grabs or changes settings. |
+| `media-server years` | Enable a local alternate-year search adapter using exact IMDb metadata and normal Radarr decisions. |
+| `media-server years-undo` | Remove only the owned alternate-year adapter connection and disable its listener. |
 | `media-server setup` | Enter missing bot credentials locally. Existing saved credentials are adopted. |
 | `media-server status` | Show the four services and next catalogue refresh. |
 | `media-server stop` / `media-server start` | Stop/start Telegram polling during migration. |
@@ -121,3 +123,11 @@ bash -n bootstrap.sh install.sh scripts/update-live scripts/media-server
 The unit tests cover bot behaviour and migration boundaries. They do not claim a live Appbox deployment or a full VM restore test. Secrets and runtime backups are never committed. IMDb datasets are downloaded by the user's server; they are not redistributed here.
 
 Official installation/backup references: [Servarr installer](https://github.com/Servarr/Wiki/blob/master/servarr/servarr-install-script.sh), [Prowlarr Linux installation](https://wiki.servarr.com/prowlarr/installation/linux), [Radarr backup/restore](https://wiki.servarr.com/radarr/faq#how-do-i-backuprestore-radarr).
+
+## Alternate release years
+
+Run `update-live && media-server years` to enable the optional **Media Server Verified Years** Torznab connection in Radarr. The authenticated adapter listens on loopback port 18787 inside the Telegram bot process. It reads Radarr's selected movie by exact IMDb ID, then queries alternate years from that movie's Radarr secondary year or the same IMDb record in the local recommendation catalogue. It never guesses adjacent years or changes a movie's title, year, path, monitoring, profile or IDs. The catalogue must contain the title for an IMDb-derived alternate year to be available; its rating/vote filters mean it is not the full IMDb catalogue.
+
+Only movie sources already connected and enabled for interactive search in Radarr are queried, with source tags respected. Candidate release titles must match the selected canonical/original title and a verified year. Conflicting IMDb/TMDb attributes, sequels and ambiguous titles are discarded. Original release labels remain unchanged, including AI-upscale/60FPS labels. Returned releases still undergo Radarr's normal parsing, identity and quality decisions, then the bot's existing filters and final approval/revalidation. No forced grabs or release-push endpoint are used. A candidate may still be rejected by Radarr; this adapter expands discovery rather than overriding those rejections.
+
+The adapter has RSS disabled. Enabling it starts no movie search or download. Existing search buttons in Radarr retain their normal behavior, so use **Interactive Search** for testing. Setup stores private connection settings under the existing bot config directory, included in encrypted backups, and adds one owned Radarr indexer. `media-server years-undo` removes only that connection and disables the listener. It does not revert the separately added public indexers. A full pre-indexer backup remains the way to restore the complete earlier setup on a fresh installation. Live end-to-end behavior must be verified on your VPS after installation.
