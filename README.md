@@ -78,6 +78,10 @@ Bootstrap can install native Radarr/Prowlarr on a blank VPS, but it cannot recon
 
 ## Helpers
 
+After taking a backup, run `update-live && media-server indexers` to test public torrent sources that advertise English and Movies/TV support. Failed tests and existing definitions are skipped. General sources may also host other categories; the helper requires all enabled app connections to sync Movies/TV categories only and does not change those connections. Site language does not guarantee English audio on every release. TV-only sources stay in Prowlarr until a compatible TV app is connected; Radarr handles movies only.
+
+Each batch uses a private journal under the bot state directory (included in backups), unique source names and its own search-enabled, RSS-disabled profile. Adding sources does not start a movie search or grab. Explicit later searches can use them. Run `media-server indexers-undo` to remove this batch and queue application sync, leaving every pre-existing source intact. Repeated add calls do not create another batch until undo completes. Interrupted add requests are reconciled by the undo command; edited/replaced additions are left for manual review. Testing many sources can take several minutes. Live source availability and app synchronization must be checked on your VPS.
+
 | Command | Purpose |
 | --- | --- |
 | `update-live` | Pull main and deploy the latest Telegram bot/services. Preserve app config and tracked downloads. |
@@ -85,6 +89,8 @@ Bootstrap can install native Radarr/Prowlarr on a blank VPS, but it cannot recon
 | `media-server restore FILE.tar.gz.gpg` | Restore to an otherwise fresh installation. |
 | `media-server paths` | Change Movies/Kids Movies paths after storage is mounted. Never move/delete movie files. |
 | `media-server quality` | Add optional Dolby Vision +100 and Dolby Atmos +100 preferences to the bot's existing 4K Balanced profile. |
+| `media-server indexers` | Test and add public English torrent sources supporting Movies/TV, with an undo journal. |
+| `media-server indexers-undo` | Remove only sources added by that batch, preserving all pre-existing sources including Knaben. |
 | `media-server setup` | Enter missing bot credentials locally. Existing saved credentials are adopted. |
 | `media-server status` | Show the four services and next catalogue refresh. |
 | `media-server stop` / `media-server start` | Stop/start Telegram polling during migration. |
