@@ -110,3 +110,30 @@ class PublicIndexerTests(unittest.TestCase):
         self.bad = True
         with self.assertRaises(ValueError): self.helper()
         self.assertEqual(self.writes, [])
+
+    def test_diagnostic_compares_types_and_years_without_mutation(self):
+        self.backend()
+        target = source('The Pirate Bay', id=16)
+        queries = []
+        def api(app, endpoint):
+            if app == 'radarr' and endpoint == 'indexerstatus':
+                return [{'indexerId': 1, 'disabledTill': '2026-11-04T01:00:00Z'}]
+            if app == 'radarr':
+                self.assertEqual(endpoint, 'indexer')
+                return [dict(self.original, enableAutomaticSearch=True, enableInteractiveSearch=True)]
+            self.assertEqual((app, endpoint), ('prowlarr', 'indexer'))
+            return [target]
+        def probe(indexer, kind, query):
+            queries.append((indexer, kind, query))
+            if query.endswith('2011'):
+                return {'rows': []}
+            return {'rows': [{'title': 'Insidious 2010 2160p https://private.invalid/key', 'seeders': '47'}]}
+        with patch('builtins.print') as printer:
+            m.diagnose(api, probe)
+        self.assertEqual(queries, [(16, 'search', 'Insidious'), (16, 'movie', 'Insidious'),
+                                  (16, 'movie', 'Insidious 2010'), (16, 'movie', 'Insidious 2011')])
+        output = ' '.join(str(c) for c in printer.call_args_list)
+        self.assertNotIn('private.invalid', output)
+        self.assertIn('labelled 4K=1', output)
+        self.assertIn('labelled 4K=0', output)
+        self.assertEqual(self.writes, [])
