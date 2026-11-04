@@ -164,5 +164,37 @@ class SlickTests(unittest.TestCase):
         self.bot.rad.assert_not_called()
 
 
+class LibraryQualityTests(unittest.TestCase):
+    def test_imported_file_labels_and_missing_metadata(self):
+        from bot import library_quality
+        movie = {'movieFile':{'quality':{'quality':{'resolution':2160}},
+                              'mediaInfo':{'videoDynamicRangeType':'DV HDR10',
+                                           'audioCodec':'TrueHD Atmos'}}}
+        self.assertEqual(library_quality(movie), '4K Dolby Vision · Dolby Atmos')
+        info = movie['movieFile']['mediaInfo']
+        info['videoDynamicRangeType'] = 'HDR10'
+        info['audioCodec'] = 'TrueHD 7.1'
+        self.assertEqual(library_quality(movie), '4K HDR')
+        info.update(videoDynamicRangeType='', videoDynamicRange='', videoCodec='HEVC')
+        self.assertEqual(library_quality(movie), '4K SDR')
+        movie['movieFile']['mediaInfo'] = {}
+        self.assertEqual(library_quality(movie), '4K')
+        self.assertEqual(library_quality({'qualityProfileId':7}), 'Quality unknown')
+        movie['movieFile']['quality']['quality'] = {'name':'Bluray-1080p'}
+        self.assertEqual(library_quality(movie), '1080p')
+
+    def test_empty_downloads_has_only_status_and_refresh_time(self):
+        case = SlickTests()
+        case.setUp()
+        try:
+            case.bot.rad.side_effect = lambda endpoint, *a, **kw: [] if endpoint=='movie' else {'records':[]}
+            case.bot.show_downloads()
+            text = case.bot.tg.call_args.args[1]['text']
+            self.assertRegex(text, r'^No current Downloads\n\nLast refreshed: \d{1,2}:\d{2}:\d{2} [AP]M$')
+            self.assertTrue(case.bot.live_view())
+        finally:
+            case.tearDown()
+
+
 if __name__=='__main__':
     unittest.main()
