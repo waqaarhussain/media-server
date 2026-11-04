@@ -259,6 +259,32 @@ def release_details(release):
     return resolution, source, " / ".join(colour) or "Unknown", audio or "Unknown"
 
 
+def library_quality(movie):
+    """Compact labels from Radarr's imported file, never its quality profile."""
+    file = movie.get('movieFile') or {}
+    quality = (file.get('quality') or {}).get('quality') or {}
+    info = file.get('mediaInfo') or {}
+    resolution = quality.get('resolution')
+    if not resolution:
+        match = re.search(r'(?:^|-)(2160|1080|720|576|480)p$', quality.get('name') or '')
+        resolution = int(match.group(1)) if match else None
+    label = '4K' if str(resolution)=='2160' else f'{resolution}p' if resolution else 'Quality unknown'
+    dynamic = ' '.join(str(info.get(k) or '') for k in ('videoDynamicRangeType','videoDynamicRange'))
+    if re.search(r'\b(?:DV|DoVi|Dolby[ ._-]?Vision)\b', dynamic, re.I):
+        label += ' Dolby Vision'
+    elif re.search(r'HDR10(?:Plus|\+)', dynamic, re.I):
+        label += ' HDR10+'
+    elif re.search(r'HDR|HLG|\bPQ\b', dynamic, re.I):
+        label += ' HDR'
+    elif re.search(r'\bSDR\b', dynamic, re.I) or (
+            info.get('videoCodec') and 'videoDynamicRange' in info and
+            'videoDynamicRangeType' in info and not dynamic.strip()):
+        label += ' SDR'
+    if re.search(r'\bAtmos\b', str(info.get('audioCodec') or ''), re.I):
+        label += ' · Dolby Atmos'
+    return label
+
+
 GENRES = {
     'action':'Action', 'adventure':'Adventure', 'animation':'Animation', 'comedy':'Comedy',
     'crime':'Crime', 'documentary':'Documentary', 'drama':'Drama', 'family':'Family',
@@ -620,7 +646,8 @@ class Bot:
         ids.sort(key=lambda mid: (movies[mid].get('title') or '').casefold())
         if library:
             page = max(0,min(page,max(0,(len(ids)-1)//15)))
-            titles = [f"{movies[mid]['title']} ({movies[mid].get('year','?')})" for mid in ids[page*15:page*15+15]]
+            titles = [f"{movies[mid]['title']} ({movies[mid].get('year','?')}) · {library_quality(movies[mid])}"
+                      for mid in ids[page*15:page*15+15]]
             rows = []
             nav = []
             if page>0:
@@ -639,6 +666,8 @@ class Bot:
         visible = ids[page*2:page*2+2]
         heading = '🗑 Delete a movie' if manage else '✅ Library' if library else '📥 Downloads'
         lines = [heading+f' · {len(ids)} movie(s)','Tap a movie for details.']
+        if not ids:
+            lines = ['No current Downloads']
         rows = []
         for mid in visible:
             movie = movies[mid]
@@ -652,11 +681,12 @@ class Bot:
             short_status = '✅' if movie.get('hasFile') else label.split('\n')[0]
             label = title[:30]+' · '+short_status[:26] if len(short_status)>1 else title[:56]+' '+short_status
             rows.append([{'text':label[:60],'callback_data':'global:item:'+token}])
-        if not visible:
-            lines.append('No movies to manage.' if manage else 'No imported movies found.' if library else
-                         'No active Radarr downloads or pending bot requests.')
         if not library:
-            lines.append(self.live_stamp(bool(live))+'\nAuto-refresh about every 5 seconds while open.')
+            if not ids:
+                clock = datetime.datetime.now(ZoneInfo('Europe/London')).strftime('%I:%M:%S %p').lstrip('0')
+                lines.append('Last refreshed: '+clock)
+            else:
+                lines.append(self.live_stamp(bool(live))+'\nAuto-refresh about every 5 seconds while open.')
         paging = []
         if page>0:
             paging.append({'text':'Previous','callback_data':f'global:{mode}:{page-1}'})
