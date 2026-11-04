@@ -203,5 +203,81 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.bot.tg.call_count,before)
 
 
+class UpgradeTests(unittest.TestCase):
+    setUp = WorkflowTests.setUp
+    tearDown = WorkflowTests.tearDown
+
+    def owned(self):
+        self.movie.update(hasFile=True, movieFileId=50, added='2026-11-01',
+                          movieFile={'quality':{'quality':{'name':'Bluray-2160p'}},
+                                     'mediaInfo':{'videoDynamicRange':'HDR'}})
+        return self.movie
+
+    def test_owned_movie_offers_upgrade_without_mutating(self):
+        self.bot.rad.return_value = [self.owned()]
+        self.bot.search_releases({'tmdbId':99,'title':'Example'})
+        self.assertIn('Find better version', str(self.bot.tg.call_args))
+        self.assertEqual(self.bot.rad.call_count, 1)
+
+    def test_upgrade_search_allows_completed_job_and_preserves_kids_folder(self):
+        movie = self.owned()
+        movie['path'] = '/media/Kids/Movies/Example'
+        self.bot.state['jobs']['42'] = {'status':'imported'}
+        self.bot.rad.side_effect = [[movie], {'records':[]}, [release()]]
+        self.bot.search_releases({'tmdbId':99,'title':'Example'}, upgrade=True)
+        self.assertEqual(self.bot.state['session']['root'], '/media/Kids/Movies')
+        self.assertIn('Download replacement', str(self.bot.tg.call_args))
+        self.assertNotIn('Save to Movies', str(self.bot.tg.call_args))
+        self.assertEqual(self.bot.state['session']['movie']['movieFileId'], 50)
+
+    def test_upgrade_submission_keeps_old_file_and_tracks_new_import(self):
+        movie = self.owned()
+        self.bot.state['jobs']['42'] = {'status':'imported'}
+        self.bot.show_recommendation(movie, [release()], True)
+        self.bot.rad.side_effect = [movie, {'records':[]}, [release()], {}]
+        self.bot.callback('download')
+        job = self.bot.state['jobs']['42']
+        self.assertEqual(job['upgradeFromFileId'], 50)
+        self.assertEqual(job['status'], 'submitted')
+        self.assertEqual([c.args[0] for c in self.bot.rad.call_args_list],
+                         ['movie/42', 'queue?pageSize=1000', 'release?movieId=42', 'release'])
+        self.assertNotIn('shouldOverride', self.bot.rad.call_args.args[1])
+        self.bot.rad.side_effect = [{'records':[]}, movie]
+        self.bot.check_imports()
+        self.assertNotEqual(job['status'], 'imported')
+        self.bot.rad.side_effect = [{'records':[]}, dict(movie, movieFileId=51)]
+        self.bot.check_imports()
+        self.assertEqual(job['status'], 'imported')
+
+    def test_upgrade_refuses_changed_file_identity_and_rejected_release(self):
+        for change in ({'movieFileId':51}, {'tmdbId':100}, {'hasFile':False}, {}):
+            movie = dict(self.owned())
+            self.bot.state['jobs'].clear()
+            self.bot.show_recommendation(movie, [release()], True)
+            self.bot.rad.reset_mock()
+            self.bot.rad.side_effect = [dict(movie, **change), {'records':[]}, [release(rejected=True)]]
+            self.bot.callback('download')
+            self.assertFalse(any(c.args[0]=='release' for c in self.bot.rad.call_args_list))
+
+    def test_upgrade_cannot_move_existing_file_to_another_root(self):
+        movie = self.owned()
+        self.bot.show_recommendation(movie, [release()], True)
+        self.bot.callback('toggle')
+        self.assertEqual(self.bot.state['session']['root'], '/media/Movies')
+        self.bot.state['session']['root'] = '/media/Kids/Movies'
+        self.bot.rad.side_effect = [movie, {'records':[]}, [release()]]
+        self.bot.callback('download')
+        self.assertFalse(any(c.args[0]=='release' for c in self.bot.rad.call_args_list))
+
+    def test_upgrade_pending_stays_in_downloads_with_old_file_present(self):
+        movie = self.owned()
+        self.bot.state['jobs']['42'] = {'status':'submitted','title':'Example','upgradeFromFileId':50}
+        self.bot.live_downloads = Mock(return_value={})
+        self.bot.rad.side_effect = [[movie], {'records':[]}]
+        self.bot.show_downloads()
+        self.assertIn('Example', str(self.bot.tg.call_args))
+        self.assertNotIn('No current Downloads', str(self.bot.tg.call_args))
+
+
 if __name__ == "__main__":
     unittest.main()
