@@ -182,7 +182,7 @@ class WorkflowTests(unittest.TestCase):
         self.bot.rad.side_effect=[[],{'records':[]}]
         self.bot.handle({'callback_query':{'id':'cb','from':{'id':1},'data':'global:status',
                        'message':{'chat':{'id':1,'type':'private'}}}})
-        self.assertTrue(any('No active Radarr downloads' in c.args[1].get('text','')
+        self.assertTrue(any('No current Downloads' in c.args[1].get('text','')
                             for c in self.bot.tg.call_args_list))
 
     def test_poster_metadata_does_not_spawn_separate_messages(self):
