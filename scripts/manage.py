@@ -674,7 +674,7 @@ def dolby_quality(cfg):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('install', 'update', 'backup', 'restore', 'paths', 'setup', 'status', 'start', 'stop', 'quality', 'indexers', 'indexers-undo'))
+    parser.add_argument('command', choices=('install', 'update', 'backup', 'restore', 'paths', 'setup', 'status', 'start', 'stop', 'quality', 'indexers', 'indexers-undo', 'indexers-check'))
     parser.add_argument('filename', nargs='?')
     parser.add_argument('--restore', dest='snapshot')
     parser.add_argument('--user')
@@ -699,6 +699,9 @@ def main():
         paths(cfg)
     elif args.command == 'quality':
         dolby_quality(cfg)
+    elif args.command == 'indexers-check':
+        from public_indexers import diagnose
+        diagnose(api)
     elif args.command in ('indexers', 'indexers-undo'):
         from public_indexers import operate
         operate(cfg, api, atomic, own, undo=args.command == 'indexers-undo')
