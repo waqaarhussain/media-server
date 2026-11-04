@@ -9,7 +9,7 @@ spec = importlib.util.spec_from_file_location('public_indexers', Path(__file__).
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
-def source(name='Example', **extra):
+def source(name='LimeTorrents', **extra):
     return dict({'name': name, 'definitionName': name.lower(), 'implementation': 'Cardigann',
         'privacy': 'public', 'protocol': 'torrent', 'language': 'en-US', 'supportsSearch': True,
         'capabilities': {'categories': [{'id': 2000}]},
@@ -23,6 +23,13 @@ class PublicIndexerTests(unittest.TestCase):
                       {'language': 'multi'}, {'protocol': 'usenet'}, {'supportsSearch': False},
                       {'capabilities': {'categories': [{'id': 6000}]}}):
             self.assertFalse(m.candidate(source(**value)))
+
+    def test_anime_and_adult_sources_with_tv_categories_are_excluded(self):
+        for name in ('E-Hentai', 'Anime Tosho', 'Bangumi Moe', 'nekoBT', 'Nyaa.si',
+                     'Shana Project', 'SubsPlease', 'Tokyo Toshokan', 'Unknown Source'):
+            self.assertFalse(m.candidate(source(name)), name)
+        for name in ('YTS', 'The Pirate Bay', '1337x', 'EZTV', 'showRSS'):
+            self.assertTrue(m.candidate(source(name)), name)
 
     def backend(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -40,9 +47,9 @@ class PublicIndexerTests(unittest.TestCase):
         if endpoint == 'applications':
             return [{'syncLevel': 'fullSync', 'fields': [{'name': 'syncCategories', 'value': [8000] if self.bad else [2000, 5000]}]}]
         if endpoint == 'indexer/schema':
-            return [source('Knaben'), source(), source(), source('Broken'), source('Private', privacy='private')]
+            return [source('Knaben'), source(), source(), source('YTS'), source('Private', privacy='private')]
         if endpoint == 'indexer/test':
-            if payload['definitionName'] == 'broken': raise RuntimeError('failed')
+            if payload['definitionName'] == 'yts': raise RuntimeError('failed')
             return
         if endpoint == 'appprofile':
             if method == 'POST':
