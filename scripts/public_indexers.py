@@ -5,6 +5,70 @@ import json
 import re
 import uuid
 from pathlib import Path
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+
+
+def probe_feed(indexer_id, search_type, query):
+    xml = ET.parse('/var/lib/prowlarr/config.xml').getroot()
+    base = xml.findtext('UrlBase') or ''
+    params = urllib.parse.urlencode({'t': search_type, 'q': query, 'cat': '2000', 'limit': 100})
+    url = f'http://127.0.0.1:9696{base}/{int(indexer_id)}/api?{params}'
+    request = urllib.request.Request(url, headers={'X-Api-Key': xml.findtext('ApiKey')})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            root = ET.fromstring(response.read())
+    except urllib.error.HTTPError as error:
+        return {'error': 'HTTP ' + str(error.code)}
+    except (urllib.error.URLError, TimeoutError, ET.ParseError):
+        return {'error': 'Connection timeout/failure or invalid XML response'}
+    error = next((n for n in root.iter() if n.tag.split('}')[-1] == 'error'), None)
+    if error is not None:
+        return {'error': 'Torznab error code ' + str(error.get('code', 'unknown'))}
+    rows = []
+    for item in root.findall('.//item'):
+        attrs = {n.get('name'): n.get('value') for n in item.iter()
+                 if n.tag.split('}')[-1] == 'attr'}
+        rows.append({'title': item.findtext('title') or '', 'seeders': attrs.get('seeders', '?')})
+    return {'rows': rows}
+
+
+def diagnose(api, probe=probe_feed):
+    print('READ-ONLY diagnostic: no settings changes, grabs or downloads.', flush=True)
+    indexers = api('radarr', 'indexer')
+    statuses = {s['indexerId']: s for s in api('radarr', 'indexerstatus')}
+    print('\nRadarr sources:', flush=True)
+    for r in indexers:
+        status = statuses.get(r['id'], {})
+        print(f"  {r['name']}: automatic={r.get('enableAutomaticSearch')} interactive={r.get('enableInteractiveSearch')} disabledUntil={status.get('disabledTill', 'none')}", flush=True)
+        cats = next((f.get('value') for f in r.get('fields', []) if f['name'] == 'categories'), [])
+        remove_year = next((f.get('value') for f in r.get('fields', []) if f['name'] == 'removeYear'), None)
+        print(f'    categories={cats}; removeYear={remove_year}', flush=True)
+    targets = [r for r in api('prowlarr', 'indexer')
+               if str(r.get('definitionName', '')).lower() == 'thepiratebay'
+               or r.get('name', '').startswith('The Pirate Bay')]
+    if not targets:
+        print('No Pirate Bay indexer is configured in Prowlarr.')
+        return
+    for target in targets:
+        print('\nProwlarr movie-category probes: ' + target['name'], flush=True)
+        for search_type, query in [('search', 'Insidious'), ('movie', 'Insidious'),
+                                   ('movie', 'Insidious 2010'), ('movie', 'Insidious 2011')]:
+            print(f'  Testing type={search_type}, query={query!r} ...', flush=True)
+            result = probe(target['id'], search_type, query)
+            if 'error' in result:
+                print('    ' + result['error'], flush=True)
+                continue
+            rows = result['rows']
+            uhd = [r for r in rows if re.search(r'2160|\b4k\b', r['title'], re.I)]
+            print(f'    Results={len(rows)}; labelled 4K={len(uhd)}', flush=True)
+            for row in (uhd[:6] or rows[:3]):
+                # Movie titles only. Never print feed links, raw errors or API keys.
+                title = re.sub(r'https?://\S+', '[link removed]', row['title'])
+                title = re.sub(r'[\x00-\x1f\x7f]', ' ', title)[:240]
+                print('    ' + title + ' | reported seeders=' + str(row['seeders']), flush=True)
 
 # Category labels alone are insufficient: adult/anime definitions sometimes map
 # their entire catalogue to Movies or TV. Unknown definitions fail closed.
