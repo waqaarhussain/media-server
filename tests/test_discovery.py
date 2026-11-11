@@ -22,6 +22,8 @@ class FeatureTests(unittest.TestCase):
     current=test_menu.MenuTests.current
 
     def feed(self,movies):
+        # These feed/navigation tests isolate availability, covered separately.
+        self.bot.search_releases=Mock(return_value=True)
         previous=self.bot.rad.side_effect
         self.bot.rad.side_effect=lambda endpoint,*a,**kw: copy.deepcopy(movies) if endpoint.startswith('importlist/movie?') else previous(endpoint,*a,**kw)
 
