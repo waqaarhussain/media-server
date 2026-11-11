@@ -135,28 +135,34 @@ def ranked_movies(query, movies):
     title_query = normal(query[:year_match.start()] if year_match else query)
     if not title_query:
         title_query = normal(query)
-    title_query = re.sub(r'^the ', '', title_query)
-    def title(movie):
-        return re.sub(r'^the ', '', normal(movie.get('title')))
-    family = [movie for movie in movies if title(movie)==title_query or
-              title(movie).startswith(title_query+' ')]
-    collections = {m.get('collection', {}).get('tmdbId') for m in movies
+    def collection_name(value):
+        value = re.sub(r'^the ', '', normal(value))
+        return re.sub(r'\s+(?:collection|box set|boxset)$', '', value)
+    # Radarr's TMDb collection reference uses title, not name. Membership must
+    # come from the metadata ID; shared title words also match fan films/docs.
+    collection_query = collection_name(title_query)
+    matching = {}
+    for movie in movies:
+        collection = movie.get('collection')
+        if not isinstance(collection, dict) or not collection.get('tmdbId'):
+            continue
+        name = collection.get('title') or collection.get('name')
+        if name and collection_name(name)==collection_query:
+            matching.setdefault(collection['tmdbId'], []).append(movie)
+    if matching and not year_match:
+        # If names collide, use the collection containing the most-voted film.
+        cid = max(matching, key=lambda cid: max(
+            rating(m, 'imdb')[1] or rating(m, 'tmdb')[1] for m in matching[cid]))
+        members = {m['tmdbId']: m for m in movies
                    if isinstance(m.get('collection'), dict) and
-                   normal(m['collection'].get('name')).removesuffix(' collection')==title_query}
-    collections.discard(None)
-    franchise = not year_match and (collections or (len({title(m) for m in family})>1 and
-                (len(title_query.split())>1 or any(':' in m.get('title','') or
-                 re.search(r'\b(?:2|3|4|chapter|part)\b', title(m)) for m in family))))
-    family_ids = {m['tmdbId'] for m in family}
+                   m['collection'].get('tmdbId')==cid}
+        return sorted(members.values(), key=lambda m: (movie_year(m), normal(m.get('title'))))[:50]
+    title_query = re.sub(r'^the ', '', title_query)
     def key(movie):
-        collection = movie.get('collection') if isinstance(movie.get('collection'), dict) else {}
-        in_family = movie['tmdbId'] in family_ids or collection.get('tmdbId') in collections
         score = title_score(title_query, movie)
         votes = rating(movie, 'imdb')[1] or rating(movie, 'tmdb')[1]
-        if franchise and in_family:
-            return (0, movie_year(movie), -score, -votes)
         year_penalty = 0 if not year_match or str(movie.get('year'))==year_match.group(1) else 1
-        return (1, year_penalty, -score, -votes, movie_year(movie))
+        return (year_penalty, -score, -votes, movie_year(movie))
     return sorted(movies, key=key)[:50]
 
 
@@ -564,10 +570,7 @@ class Bot:
                 self.state['old_panels'].append(old['message_id'])
             self.state['ui'] = None
         self.save()
-        updates = list(self.state.get('notices',{}).values())[-3:]
         text = '🎬 Movie menu\n\nWhat are we watching?\nChoose below, or send a movie name.'
-        if updates:
-            text += '\n\nLatest updates\n'+'\n'.join(updates)
         self.panel(text,controls=self.home_controls(),view={'route':'home'},force=True)
 
     def notice(self, key, text):
