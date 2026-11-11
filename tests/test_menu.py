@@ -150,7 +150,8 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(self.current(),screen)
         self.assertIn('ready:42',self.bot.state['notices'])
         self.click('global:home')
-        self.assertIn('is ready',self.current()['text'])
+        self.assertNotIn('Latest updates',self.current()['text'])
+        self.assertNotIn('is ready',self.current()['text'])
 
     def test_background_does_not_replace_delete_confirmation(self):
         self.message('/start')
