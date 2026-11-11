@@ -4,6 +4,7 @@ import difflib
 import datetime
 import fcntl
 import http.cookiejar
+import hashlib
 import json
 import math
 import os
@@ -26,7 +27,7 @@ class ServiceError(Exception):
 
 
 def request(url, payload=None, headers=None, timeout=30, method=None):
-    data = None if payload is None else json.dumps(payload).encode()
+    data = payload if isinstance(payload, bytes) else None if payload is None else json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers={
         "Content-Type": "application/json", **(headers or {})}, method=method)
     try:
@@ -127,6 +128,36 @@ def title_score(query, movie):
                             for w in words), default=0) for t in tokens) / max(len(tokens), 1)
         scores.append(max(similarity, coverage * 0.88))
     return max(scores, default=0)
+
+
+def ranked_movies(query, movies):
+    year_match = re.search(r'\b((?:19|20)\d{2})\b', query)
+    title_query = normal(query[:year_match.start()] if year_match else query)
+    if not title_query:
+        title_query = normal(query)
+    title_query = re.sub(r'^the ', '', title_query)
+    def title(movie):
+        return re.sub(r'^the ', '', normal(movie.get('title')))
+    family = [movie for movie in movies if title(movie)==title_query or
+              title(movie).startswith(title_query+' ')]
+    collections = {m.get('collection', {}).get('tmdbId') for m in movies
+                   if isinstance(m.get('collection'), dict) and
+                   normal(m['collection'].get('name')).removesuffix(' collection')==title_query}
+    collections.discard(None)
+    franchise = not year_match and (collections or (len({title(m) for m in family})>1 and
+                (len(title_query.split())>1 or any(':' in m.get('title','') or
+                 re.search(r'\b(?:2|3|4|chapter|part)\b', title(m)) for m in family))))
+    family_ids = {m['tmdbId'] for m in family}
+    def key(movie):
+        collection = movie.get('collection') if isinstance(movie.get('collection'), dict) else {}
+        in_family = movie['tmdbId'] in family_ids or collection.get('tmdbId') in collections
+        score = title_score(title_query, movie)
+        votes = rating(movie, 'imdb')[1] or rating(movie, 'tmdb')[1]
+        if franchise and in_family:
+            return (0, movie_year(movie), -score, -votes)
+        year_penalty = 0 if not year_match or str(movie.get('year'))==year_match.group(1) else 1
+        return (1, year_penalty, -score, -votes, movie_year(movie))
+    return sorted(movies, key=key)[:50]
 
 
 QUALITIES = {
@@ -368,8 +399,20 @@ class Bot:
         temp.replace(self.path)
 
     def tg(self, method, payload):
+        headers = None
+        if payload.get('_cover'):
+            payload = dict(payload)
+            cover = payload.pop('_cover')
+            boundary = 'media-bot-'+secrets.token_hex(12)
+            parts = []
+            for key, value in payload.items():
+                value = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+                parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode())
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="cover"; filename="covers.jpg"\r\nContent-Type: image/jpeg\r\n\r\n'.encode()+cover+b'\r\n')
+            payload = b''.join(parts)+f'--{boundary}--\r\n'.encode()
+            headers = {'Content-Type':'multipart/form-data; boundary='+boundary}
         result = request("https://api.telegram.org/bot" + self.c["TELEGRAM_BOT_TOKEN"]
-                         + "/" + method, payload, timeout=35)
+                         + "/" + method, payload, headers=headers, timeout=35)
         if not result.get("ok"):
             raise ServiceError("Telegram request failed.")
         return result["result"]
@@ -390,7 +433,7 @@ class Bot:
         return {'inline_keyboard':[[{'text':'‹ Back','callback_data':target},
                                    {'text':'Main menu','callback_data':'global:home'}]]}
 
-    def panel(self, text, choices=None, movie=None, controls=None, view=None, force=False):
+    def panel(self, text, choices=None, movie=None, controls=None, view=None, force=False, cover=None):
         # Add/change the poster inside the existing panel; navigation keeps the same message.
         markup = controls or {'inline_keyboard':[[{
             'text':label, 'callback_data':f"{self.state['session']['nonce']}:{action}"
@@ -400,12 +443,14 @@ class Bot:
         if not markup['inline_keyboard']:
             markup = self.back_controls()
         ui = self.state.get('ui')
-        poster = poster_url(movie or {})
+        poster = 'attach://cover' if cover else poster_url(movie or {})
+        upload = {'_cover':cover} if cover else {}
         photo = bool(poster)
         if movie and not poster:
             text = text.rstrip() + '\n\nPoster unavailable for this title.'
         text = text[:1000] if photo else text[:4000]
-        signature = json.dumps([text,markup,poster],sort_keys=True)
+        art_key = hashlib.sha256(cover).hexdigest() if cover else poster
+        signature = json.dumps([text,markup,art_key],sort_keys=True)
         self.state['view'] = view or {'route':'static'}
         if ui and not (ui.get('photo') and not poster):
             if not force and ui.get('signature')==signature:
@@ -413,9 +458,9 @@ class Bot:
                 return ui
             payload = {'chat_id':self.chat,'message_id':ui['message_id'],'reply_markup':markup}
             try:
-                if poster and (not ui.get('photo') or ui.get('poster')!=poster):
-                    self.tg('editMessageMedia',dict(payload,media={'type':'photo','media':poster,'caption':text}))
-                    ui.update(photo=True,poster=poster)
+                if poster and (not ui.get('photo') or ui.get('poster')!=art_key):
+                    self.tg('editMessageMedia',dict(payload,media={'type':'photo','media':poster,'caption':text},**upload))
+                    ui.update(photo=True,poster=art_key)
                 elif ui.get('photo'):
                     self.tg('editMessageCaption',dict(payload,caption=text))
                 else:
@@ -438,7 +483,7 @@ class Bot:
         new_photo = False
         if poster:
             try:
-                sent = self.tg('sendPhoto',dict(payload,photo=poster,caption=text))
+                sent = self.tg('sendPhoto',dict(payload,photo=poster,caption=text,**upload))
                 new_photo = True
             except ServiceError as error:
                 if error.status not in (400,404):
@@ -449,7 +494,7 @@ class Bot:
             sent = self.tg('sendMessage',dict(payload,text=text,link_preview_options={'is_disabled':True}))
         if isinstance(sent,dict) and sent.get('message_id'):
             self.state['ui'] = {'message_id':sent['message_id'],'photo':new_photo,
-                                'poster':poster if new_photo else None,'signature':signature}
+                                'poster':art_key if new_photo else None,'signature':signature}
             if ui and ui.get('message_id')!=sent['message_id']:
                 self.state.setdefault('old_panels',[]).append(ui['message_id'])
             self.save()
@@ -501,7 +546,8 @@ class Bot:
     @staticmethod
     def home_controls():
         return {'inline_keyboard':[
-            [{'text':'🔎 Search new movie','callback_data':'global:search'}],
+            [{'text':'🔎 Search movie','callback_data':'global:search'},
+             {'text':'📺 Search TV show','callback_data':'global:tvsearch'}],
             [{'text':'🎲 Random Movie','callback_data':'global:genres'}],
             [{'text':'📥 Downloads','callback_data':'global:downloads:0'},
              {'text':'✅ Library','callback_data':'global:library:0'}],
@@ -893,9 +939,39 @@ class Bot:
         self.session('recommend',genre=genre,deck=deck[:100],index=0)
         self.show_random_pick()
 
-    def show_random_pick(self):
+    def show_random_pick(self, direction=1):
         s = self.state['session']
-        movie = self.hydrate_pick(s['deck'][s['index']])
+        s['verified_pick'] = False
+        deadline = time.monotonic()+45
+        attempts = 0
+        while 0 <= s['index'] < len(s['deck']):
+            movie = self.hydrate_pick(s['deck'][s['index']])
+            self.panel('🎲 '+GENRES[s['genre']]+'\n\nChecking for an eligible download…',
+                       controls=self.back_controls('global:genres'))
+            checked = movie.get('download_checked', 0)
+            try:
+                available = movie.get('download_available') if time.time()-checked<300 else self.search_releases(movie, probe=True)
+            except ServiceError:
+                self.panel('Download availability could not be checked. Try again.',
+                           [('Try again','reccheck'), ('‹ Back to genres','recgenres')])
+                return
+            movie.update(download_checked=time.time(), download_available=bool(available))
+            s['deck'][s['index']] = movie
+            attempts += 1
+            if available:
+                s['verified_pick'] = True
+                s['expires'] = time.time()+600
+                break
+            next_index = s['index']+direction
+            if not 0<=next_index<len(s['deck']) or attempts>=4 or time.monotonic()>=deadline:
+                choices = [('‹ Back to genres','recgenres')]
+                if 0<=next_index<len(s['deck']):
+                    choices.insert(0, ('Check more movies','recnext' if direction>0 else 'recprev'))
+                self.save()
+                self.panel('🎲 '+GENRES[s['genre']]+'\n\nNo eligible download found among the movies checked.', choices)
+                return
+            s['index'] = next_index
+            self.cleanup_previews()
         self.save()
         imdb,votes = rating(movie,'imdb')
         tomatoes,_ = rating(movie,'rottenTomatoes')
@@ -1321,6 +1397,8 @@ class Bot:
             active = None
             self.save()
         active_id = str((active or {}).get("movie", {}).get("id", ""))
+        if active and active.get('stage')=='recommend':
+            active_id = str(active['deck'][active['index']].get('id', ''))
         pending = [mid for mid in self.state["previews"] if mid != active_id]
         if not pending:
             return
@@ -1377,8 +1455,7 @@ class Bot:
                     found[movie["tmdbId"]] = movie
             if term == query and len(movies) >= 8:
                 break
-        candidates = sorted(found.values(), key=lambda m: title_score(query, m), reverse=True)[:50]
-        candidates.sort(key=lambda m: (movie_year(m), -title_score(query, m), normal(m.get('title'))))
+        candidates = ranked_movies(query, list(found.values()))
         if not candidates:
             self.panel("No movie titles found. Try fewer words or correct the spelling.")
             return
@@ -1390,12 +1467,18 @@ class Bot:
         movies = self.state['session']['movies']
         page = max(0,min(page,max(0,(len(movies)-1)//5)))
         chunk = list(enumerate(movies[page*5:page*5+5],page*5))
-        choices = [(f"{m['title']} ({m.get('year','?')})",f'movie:{i}') for i,m in chunk]
+        choices = [(f"{i+1}. {m['title']} ({m.get('year','?')})",f'movie:{i}') for i,m in chunk]
         if page>0:
             choices.append(('Previous',f'searchpage:{page-1}'))
         if (page+1)*5<len(movies):
             choices.append(('Next',f'searchpage:{page+1}'))
-        self.panel('🎬 Which movie?\nOldest release year first.',choices)
+        try:
+            from search_art import poster_strip
+            cover = poster_strip([poster_url(m) for _, m in chunk], first=page*5+1)
+        except (ImportError, OSError):
+            cover = None
+        hint = 'Choose the title matching its cover.' if cover else 'Choose a movie below.'
+        self.panel('🎬 Which movie?\n'+hint, choices, cover=cover)
 
     def selected_movie_metadata(self, movie):
         if poster_url(movie) and movie.get('overview'):
@@ -1411,8 +1494,12 @@ class Bot:
             pass  # Missing art must not prevent browsing or cause a different film to be selected.
         return movie
 
-    def search_releases(self, candidate, upgrade=False):
+    def search_releases(self, candidate, upgrade=False, probe=False):
+        if probe and not candidate.get('tmdbId'):
+            return False
         if any(p['identity'].get('tmdbId')==candidate.get('tmdbId') for p in self.state['deletions'].values()):
+            if probe:
+                return False
             self.say('This movie has a removal pending. Open Downloads before requesting it again.',status_button=True)
             return
         profile = int(self.c["RADARR_PROFILE_ID"])
@@ -1420,6 +1507,8 @@ class Bot:
         movie = next((m for m in existing if m["tmdbId"] == candidate["tmdbId"]), None)
         if movie:
             movie = merge_movie_metadata(movie, candidate)
+            if probe and movie.get('hasFile'):
+                return False
             if movie.get("hasFile") and not upgrade:
                 token = self.movie_target(movie)
                 self.panel(f"✅ {movie['title']} ({movie.get('year','?')})\n\nAlready in your library.\n"
@@ -1431,9 +1520,13 @@ class Bot:
                 self.say('The existing file changed. Search the movie again.')
                 return
             if movie["qualityProfileId"] != profile:
+                if probe:
+                    return False
                 self.say("This movie uses a different quality profile. Set it to 4K Balanced in Radarr first.")
                 return
             if str(Path(movie["path"]).parent) not in (self.c["RADARR_MOVIES_ROOT"], self.c["RADARR_KIDS_ROOT"]):
+                if probe:
+                    return False
                 self.say("This movie is assigned to a folder outside Movies/Kids Movies. Review it in Radarr first.")
                 return
         else:
@@ -1447,17 +1540,25 @@ class Bot:
             movie = merge_movie_metadata(movie, candidate)
         movie_id = str(movie["id"])
         if movie_id in self.state["jobs"] and self.state['jobs'][movie_id].get('status') != 'imported':
+            if probe:
+                return False
             self.panel(f"⬇️ {movie['title']}\n\nAlready requested. Check its progress below.",
                        controls=self.progress_controls(movie_id), movie=movie)
             return
         queue = self.rad("queue?" + urllib.parse.urlencode({"pageSize": 1000, "includeUnknownMovieItems": "false"}))
         if any(q.get("movieId") == movie["id"] for q in queue.get("records", [])):
+            if probe:
+                return False
             self.panel(f"⬇️ {movie['title']}\n\nAlready in your download queue.",
                        controls=self.progress_controls(movie_id), movie=movie)
             return
-        self.panel(f"🔎 {movie['title']} ({movie.get('year','?')})\n\nFinding a suitable version…", movie=movie)
-        releases = self.rad("release?movieId=" + movie_id, timeout=180)
+        if not probe:
+            self.panel(f"🔎 {movie['title']} ({movie.get('year','?')})\n\nFinding a suitable version…", movie=movie)
+        releases = self.rad("release?movieId=" + movie_id, timeout=25 if probe else 180)
         chosen, uhd = choose_releases(releases)
+        if probe:
+            candidate.update(movie)
+            return bool(chosen)
         if not chosen:
             if upgrade:
                 self.panel(f"🎬 {movie['title']} ({movie.get('year','?')})\n\nCurrent: {library_quality(movie)}\n\n"
@@ -1483,10 +1584,15 @@ class Bot:
         if kind in ('recnext','recprev') and s['stage']=='recommend':
             s['index'] = max(0,min(len(s['deck'])-1,s['index']+(1 if kind=='recnext' else -1)))
             self.save()
+            self.show_random_pick(1 if kind=='recnext' else -1)
+        elif kind=='reccheck' and s['stage']=='recommend':
             self.show_random_pick()
         elif kind=='recgenres' and s['stage']=='recommend':
             self.show_genres()
         elif kind=='recselect' and s['stage']=='recommend':
+            if not s.get('verified_pick'):
+                self.show_random_pick()
+                return
             movie = s['deck'][s['index']]
             self.state['recommend_return'] = dict(s)
             self.state['session'] = None
@@ -1650,6 +1756,11 @@ class Bot:
                 self.panel('🔎 Search a movie\n\nSend its name. Add the year if you know it.',
                            controls={'inline_keyboard':[[{'text':'Main menu','callback_data':'global:home'}]]})
                 return
+            if data == 'global:tvsearch':
+                self.end_browse()
+                self.panel('📺 Search a TV show\n\nSend its name. Add the year if you know it.',
+                           controls=self.back_controls(), view={'route':'tv_search'})
+                return
             if data == 'global:watchlist':
                 self.show_watchlist()
                 return
@@ -1736,6 +1847,16 @@ class Bot:
             self.show_downloads()
         elif text in ("/library","✅ Library"):
             self.show_downloads(library=True)
+        elif (self.state.get('view') or {}).get('route') == 'tv_search' and not text.startswith('/'):
+            self.panel('📺 TV show search\n\nTV search is coming soon.\nYou searched for: '+text[:150],
+                       controls={'inline_keyboard':[
+                           [{'text':'Search again','callback_data':'global:tvsearch'},
+                            {'text':'Main menu','callback_data':'global:home'}]]}, view={'route':'tv_search'})
+            if message.get('message_id'):
+                try:
+                    self.tg('deleteMessage', {'chat_id':self.chat,'message_id':message['message_id']})
+                except ServiceError:
+                    pass
         elif (self.state.get('view') or {}).get('route') in ('delete_search','delete_results') and not text.startswith('/'):
             self.search_delete(text)
         elif text.startswith("/"):
