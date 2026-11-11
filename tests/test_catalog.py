@@ -89,6 +89,7 @@ class CatalogueTests(unittest.TestCase):
         self.catalogue()
         self.bot.hydrate_pick=Mock(side_effect=lambda m:dict(m,tmdbId=345,
             overview='A detective investigates a disappearance.',remotePoster='https://example.org/a.jpg'))
+        self.bot.search_releases=Mock(return_value=True)
         self.click('global:genre:mystery')
         screen=self.current()
         content=screen.get('caption') or screen.get('media',{}).get('caption') or screen.get('text','')
@@ -122,23 +123,23 @@ class CatalogueTests(unittest.TestCase):
         self.bot.rad.return_value=[movie]
         self.bot.find_movies('long movie')
         buttons=self.current()['reply_markup']['inline_keyboard']
-        self.assertEqual(buttons[0][0]['text'],long+' (2003)')
+        self.assertEqual(buttons[0][0]['text'],'1. '+long+' (2003)')
 
     def test_search_pages_keep_selection_identity_and_five_titles(self):
         movies=[dict(self.movie,title=f'Movie {i}',tmdbId=100+i) for i in range(12)]
         self.bot.session('movie',movies=movies)
         self.bot.show_search_results()
         rows=self.current()['reply_markup']['inline_keyboard']
-        self.assertEqual([r[0]['text'] for r in rows[:5]],[f'Movie {i} (2003)' for i in range(5)])
+        self.assertEqual([r[0]['text'] for r in rows[:5]],[f'{i+1}. Movie {i} (2003)' for i in range(5)])
         self.bot.show_search_results(1)
         rows=self.current()['reply_markup']['inline_keyboard']
-        self.assertEqual(rows[0][0]['text'],'Movie 5 (2003)')
+        self.assertEqual(rows[0][0]['text'],'6. Movie 5 (2003)')
         self.assertTrue(rows[0][0]['callback_data'].endswith(':movie:5'))
         self.assertIn('Previous',[r[0]['text'] for r in rows])
         self.assertIn('Next',[r[0]['text'] for r in rows])
         self.bot.show_search_results(2)
         rows=self.current()['reply_markup']['inline_keyboard']
-        self.assertEqual(rows[0][0]['text'],'Movie 10 (2003)')
+        self.assertEqual(rows[0][0]['text'],'11. Movie 10 (2003)')
         self.assertNotIn('Next',[r[0]['text'] for r in rows])
 
 
