@@ -10,8 +10,9 @@ class SearchDisplayTests(unittest.TestCase):
     tearDown = test_menu.MenuTests.tearDown
     current = test_menu.MenuTests.current
 
-    def test_search_results_are_oldest_first_and_keep_correct_selection_ids(self):
-        movies = [dict(self.movie, tmdbId=100+i, title=title, year=year)
+    def test_collection_results_are_oldest_first_and_keep_correct_selection_ids(self):
+        movies = [dict(self.movie, tmdbId=100+i, title=title, year=year,
+                       collection={'tmdbId':228446,'title':'Insidious Collection'})
                   for i, (title, year) in enumerate([
                       ('Insidious: The Red Door', 2023), ('Insidious: Chapter 2', 2013),
                       ('Insidious', 2010), ('Insidious', 2008), ('Insidious: Chapter 3', 2015),
@@ -86,13 +87,37 @@ class SearchDisplayTests(unittest.TestCase):
         self.assertEqual([m['year'] for m in ranked_movies('holes',movies)], [2003,1990,1970])
         self.assertEqual(ranked_movies('holes 1990',movies)[0]['year'], 1990)
 
-    def test_franchise_search_is_chronological_with_unrelated_results_after_it(self):
-        movies = [dict(self.movie, tmdbId=100+i, title=title, year=year)
-                  for i, (title, year) in enumerate([
-                      ('Avengers: Endgame',2019), ('The Avengers',2012),
-                      ('The New Avengers documentary',1980), ('Avengers: Age of Ultron',2015)])]
+    def test_verified_collection_excludes_title_matches_and_orders_members(self):
+        movies = [dict(self.movie, tmdbId=100+i, title=title, year=year,
+                       collection=collection)
+                  for i, (title, year, collection) in enumerate([
+                      ('Avengers: Endgame',2019,{'tmdbId':86311,'title':'The Avengers Collection'}),
+                      ('The Avengers',2012,{'tmdbId':86311,'title':'The Avengers Collection'}),
+                      ('The New Avengers documentary',1980,None),
+                      ('Avengers: Age of Ultron',2015,{'tmdbId':86311,'title':'The Avengers Collection'})])]
         ordered = ranked_movies('Avengers',movies)
-        self.assertEqual([m['year'] for m in ordered], [2012,2015,2019,1980])
+        self.assertEqual([m['year'] for m in ordered], [2012,2015,2019])
+
+    def test_harry_potter_uses_metadata_ids_not_shared_title_words(self):
+        years = [2011,2001,2002,2004,2005,2007,2009,2010]
+        movies = [dict(self.movie,tmdbId=100+i,title=f'Harry Potter film {i}',year=year,
+                       collection={'title':'Harry Potter Collection','tmdbId':1241})
+                  for i,year in enumerate(years)]
+        movies += [dict(self.movie,tmdbId=800,title='Harry Potter: Witchcraft Repackaged',year=2001),
+                   dict(self.movie,tmdbId=801,title='Harry Potter und ein Stein',year=2006,
+                        collection={'title':'Fan parody Collection','tmdbId':999}),
+                   dict(self.movie,tmdbId=802,title='Harry Potter: A History of Magic',year=2017)]
+        for query in ('Harry Potter','Harry Potter collection','Harry Potter box set'):
+            ordered = ranked_movies(query,movies)
+            self.assertEqual([m['year'] for m in ordered], sorted(years))
+            self.assertEqual({m['tmdbId'] for m in ordered},set(range(100,108)))
+        # Explicit searches for a documentary remain possible.
+        self.assertEqual(ranked_movies('Harry Potter: A History of Magic',movies)[0]['tmdbId'],802)
+
+    def test_missing_collection_metadata_never_invents_a_collection_from_prefixes(self):
+        movies = [dict(self.movie,tmdbId=100,title='Example documentary',year=1970),
+                  dict(self.movie,tmdbId=101,title='Example',year=2000)]
+        self.assertEqual(ranked_movies('Example',movies)[0]['tmdbId'],101)
 
     def test_search_cover_strip_uses_exact_page_and_preserves_selection_indices(self):
         movies = [dict(self.movie,tmdbId=100+i,remotePoster=f'https://example.org/{i}.jpg') for i in range(7)]
