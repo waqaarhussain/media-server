@@ -132,6 +132,11 @@ def install_helpers():
 
 
 def deploy_bot(cfg, start=True):
+    # Search result contact sheets use Ubuntu's packaged Pillow installation.
+    import importlib.util
+    if importlib.util.find_spec('PIL') is None:
+        run(['apt-get', 'update', '-qq'])
+        run(['apt-get', 'install', '-y', 'python3-pil'])
     home = Path(cfg['home'])
     target = home / '.local/share/media-request-bot'
     state = home / '.local/state/media-request-bot'
@@ -141,13 +146,13 @@ def deploy_bot(cfg, start=True):
         directory.chmod(0o700)
         os.chown(directory, cfg['uid'], cfg['gid'])
     # Compile before stopping the installed bot. Download, watch and deletion ledgers survive.
-    for name in ('bot.py', 'catalog.py', 'year_adapter.py'):
+    for name in ('bot.py', 'catalog.py', 'year_adapter.py', 'search_art.py'):
         source = (REPO / 'bot' / name).read_text()
         compile(source, name, 'exec')
     was_running = active('media-request-bot.service')
     if was_running:
         run(['systemctl', 'stop', 'media-request-bot.service'])
-    for name in ('bot.py', 'catalog.py', 'year_adapter.py'):
+    for name in ('bot.py', 'catalog.py', 'year_adapter.py', 'search_art.py'):
         if (target / name).exists():
             shutil.copy2(target / name, target / (name + '.previous'))
         atomic(target / name, (REPO / 'bot' / name).read_text())
