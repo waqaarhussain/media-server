@@ -16,6 +16,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -130,29 +131,40 @@ def title_score(query, movie):
     return max(scores, default=0)
 
 
-def ranked_movies(query, movies):
-    year_match = re.search(r'\b((?:19|20)\d{2})\b', query)
-    title_query = normal(query[:year_match.start()] if year_match else query)
-    if not title_query:
-        title_query = normal(query)
-    def collection_name(value):
-        value = re.sub(r'^the ', '', normal(value))
-        return re.sub(r'\s+(?:collection|box set|boxset)$', '', value)
-    # Radarr's TMDb collection reference uses title, not name. Membership must
-    # come from the metadata ID; shared title words also match fan films/docs.
-    collection_query = collection_name(title_query)
+def collection_key(value):
+    value = re.sub(r'\s+(?:collection|box set|boxset)$', '', normal(value))
+    # Collection labels vary between "&", "and" and articles. Never use this
+    # relaxed key to infer membership from a movie's title.
+    return ' '.join(word for word in value.split() if word not in ('the', 'and'))
+
+
+def matching_collection(query, movies):
+    if re.search(r'\b(?:19|20)\d{2}\b', query):
+        return None
+    key = collection_key(query)
+    if not key:
+        return None
     matching = {}
     for movie in movies:
         collection = movie.get('collection')
         if not isinstance(collection, dict) or not collection.get('tmdbId'):
             continue
         name = collection.get('title') or collection.get('name')
-        if name and collection_name(name)==collection_query:
+        if name and collection_key(name)==key:
             matching.setdefault(collection['tmdbId'], []).append(movie)
-    if matching and not year_match:
-        # If names collide, use the collection containing the most-voted film.
-        cid = max(matching, key=lambda cid: max(
-            rating(m, 'imdb')[1] or rating(m, 'tmdb')[1] for m in matching[cid]))
+    if not matching:
+        return None
+    return max(matching, key=lambda cid: max(
+        rating(m, 'imdb')[1] or rating(m, 'tmdb')[1] for m in matching[cid]))
+
+
+def ranked_movies(query, movies):
+    year_match = re.search(r'\b((?:19|20)\d{2})\b', query)
+    title_query = normal(query[:year_match.start()] if year_match else query)
+    if not title_query:
+        title_query = normal(query)
+    cid = matching_collection(query, movies)
+    if cid:
         members = {m['tmdbId']: m for m in movies
                    if isinstance(m.get('collection'), dict) and
                    m['collection'].get('tmdbId')==cid}
@@ -1444,6 +1456,47 @@ class Bot:
             except Exception:
                 pass  # Retain ownership for a later retry, without logging sensitive URLs.
 
+    def collection_candidates(self, cid, movies):
+        """Read the same complete collection metadata Radarr uses, without adding movies."""
+        cache = getattr(self, '_collection_parts', {})
+        cached = cache.get(cid)
+        if cached and time.time()-cached['checked']<86400:
+            part_ids, name = cached['ids'], cached['name']
+        else:
+            try:
+                data = request('https://api.radarr.video/v1/movie/collection/'+str(int(cid)), timeout=12)
+            except ServiceError:
+                return None  # Keep only verified members already returned by lookup.
+            if not isinstance(data, dict) or data.get('TmdbId', data.get('tmdbId'))!=cid:
+                return None
+            parts = data.get('Parts', data.get('parts'))
+            if not isinstance(parts, list):
+                return None
+            part_ids = list(dict.fromkeys(part.get('TmdbId', part.get('tmdbId')) for part in parts
+                            if isinstance(part, dict) and isinstance(part.get('TmdbId', part.get('tmdbId')), int)
+                            and part.get('TmdbId', part.get('tmdbId'))>0))[:50]
+            name = data.get('Name', data.get('name'))
+            if not part_ids or not isinstance(name, str):
+                return None
+            cache[cid] = {'checked':time.time(), 'ids':part_ids, 'name':name}
+            self._collection_parts = cache
+        existing = {m['tmdbId']:m for m in movies}
+        def resolve(tid):
+            movie = existing.get(tid)
+            if movie is None:
+                try:
+                    matches = self.rad('movie/lookup?'+urllib.parse.urlencode({'term':'tmdb:'+str(tid)}), timeout=12)
+                except ServiceError:
+                    return None
+                movie = next((m for m in matches if m.get('tmdbId')==tid), None)
+            if movie is None:
+                return None
+            # Membership is established by the collection's part IDs, including
+            # films whose names do not contain the franchise search phrase.
+            return dict(movie, collection={'tmdbId':cid, 'title':name})
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            return [movie for movie in workers.map(resolve, part_ids) if movie is not None]
+
     def find_movies(self, query):
         self.panel("🔎 Finding your movie…")
         found = {}
@@ -1458,7 +1511,13 @@ class Bot:
                     found[movie["tmdbId"]] = movie
             if term == query and len(movies) >= 8:
                 break
-        candidates = ranked_movies(query, list(found.values()))
+        movies = list(found.values())
+        cid = matching_collection(query, movies)
+        if cid:
+            complete = self.collection_candidates(cid, movies)
+            if complete:
+                movies = complete
+        candidates = ranked_movies(query, movies)
         if not candidates:
             self.panel("No movie titles found. Try fewer words or correct the spelling.")
             return
