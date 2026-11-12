@@ -18,7 +18,8 @@ class SearchDisplayTests(unittest.TestCase):
                       ('Insidious', 2010), ('Insidious', 2008), ('Insidious: Chapter 3', 2015),
                       ('Insidious: The Last Key', 2018)])]
         self.bot.rad = Mock(return_value=movies)
-        self.bot.find_movies('Insidious')
+        with patch.object(self.bot, 'collection_candidates', return_value=None):
+            self.bot.find_movies('Insidious')
         selected = self.bot.state['session']['movies']
         self.assertEqual([m['year'] for m in selected], [2008, 2010, 2013, 2015, 2018, 2023])
         buttons = self.current()['reply_markup']['inline_keyboard']
@@ -118,6 +119,60 @@ class SearchDisplayTests(unittest.TestCase):
         movies = [dict(self.movie,tmdbId=100,title='Example documentary',year=1970),
                   dict(self.movie,tmdbId=101,title='Example',year=2000)]
         self.assertEqual(ranked_movies('Example',movies)[0]['tmdbId'],101)
+
+    def test_fast_and_furious_variants_use_collection_not_exact_title_collisions(self):
+        series = [dict(self.movie,tmdbId=100+i,title=title,year=year,
+                       collection={'tmdbId':9485,'title':'The Fast and the Furious Collection'})
+                  for i,(title,year) in enumerate([
+                      ('Furious 7',2015),('Fast Five',2011),('2 Fast 2 Furious',2003),
+                      ('The Fast and the Furious',2001),('Tokyo Drift',2006)])]
+        unrelated = [dict(self.movie,tmdbId=200+i,title='Fast and Furious',year=year)
+                     for i,year in enumerate((1939,1927,1924))]
+        for query in ('fast and furious','fast & furious','the fast and the furious','fast furious collection'):
+            ordered = ranked_movies(query,series+unrelated)
+            self.assertEqual([m['year'] for m in ordered],[2001,2003,2006,2011,2015])
+        # Users can still deliberately search the unrelated older film by year.
+        self.assertEqual(ranked_movies('Fast and Furious 1939',series+unrelated)[0]['year'],1939)
+
+    def test_search_expands_verified_collection_and_never_adds_movies(self):
+        first = dict(self.movie,tmdbId=9799,title='The Fast and the Furious',year=2001,
+                     collection={'tmdbId':9485,'title':'The Fast and the Furious Collection'})
+        second = dict(self.movie,tmdbId=584,title='2 Fast 2 Furious',year=2003)
+        fifth = dict(self.movie,tmdbId=51497,title='Fast Five',year=2011)
+        wrong = dict(self.movie,tmdbId=123,title='Fast and Furious',year=1924)
+        def api(endpoint,*args,**kwargs):
+            self.assertNotIn('method',kwargs)
+            if 'tmdb%3A584' in endpoint: return [second]
+            if 'tmdb%3A51497' in endpoint: return [fifth]
+            return [first,wrong]
+        self.bot.rad = Mock(side_effect=api)
+        data = {'TmdbId':9485,'Name':'The Fast and the Furious Collection',
+                'Parts':[{'TmdbId':9799},{'TmdbId':584},{'TmdbId':51497}]}
+        with patch('bot.request',return_value=data) as metadata:
+            self.bot.find_movies('fast and furious')
+            self.assertEqual([m['tmdbId'] for m in self.bot.state['session']['movies']], [9799,584,51497])
+            self.bot.find_movies('fast & furious')
+        metadata.assert_called_once_with('https://api.radarr.video/v1/movie/collection/9485',timeout=12)
+        buttons = self.current()['reply_markup']['inline_keyboard']
+        self.assertIn('2 Fast 2 Furious',buttons[1][0]['text'])
+        self.assertTrue(buttons[1][0]['callback_data'].endswith(':movie:1'))
+
+    def test_collection_metadata_outage_retains_verified_members_only(self):
+        movie = dict(self.movie,tmdbId=9799,title='The Fast and the Furious',year=2001,
+                     collection={'tmdbId':9485,'title':'The Fast and the Furious Collection'})
+        wrong = dict(self.movie,tmdbId=123,title='Fast and Furious',year=1924)
+        self.bot.rad = Mock(return_value=[movie,wrong])
+        with patch('bot.request',side_effect=ServiceError('Unavailable')):
+            self.bot.find_movies('fast and furious')
+        self.assertEqual([m['tmdbId'] for m in self.bot.state['session']['movies']],[9799])
+
+    def test_collection_rejects_wrong_response_identity_and_lookup_mismatch(self):
+        with patch('bot.request',return_value={'TmdbId':1,'Name':'Wrong','Parts':[{'TmdbId':584}]}):
+            self.assertIsNone(self.bot.collection_candidates(9485,[]))
+        data = {'tmdbId':9485,'name':'The Fast and the Furious Collection','parts':[{'tmdbId':584}]}
+        self.bot.rad = Mock(return_value=[dict(self.movie,tmdbId=999)])
+        with patch('bot.request',return_value=data):
+            self.assertEqual(self.bot.collection_candidates(9485,[]),[])
 
     def test_search_cover_strip_uses_exact_page_and_preserves_selection_indices(self):
         movies = [dict(self.movie,tmdbId=100+i,remotePoster=f'https://example.org/{i}.jpg') for i in range(7)]
