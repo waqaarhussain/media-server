@@ -582,8 +582,9 @@ class Bot:
                 self.state['old_panels'].append(old['message_id'])
             self.state['ui'] = None
         self.save()
-        # Telegram requires a non-empty message for an inline keyboard.
-        text = '\u2063'  # Invisible separator keeps the home menu buttons only.
+        # A zero-width message shrinks Telegram's keyboard and wraps labels.
+        # Braille blanks have width but no visible marks; clients cap to the chat width.
+        text = '\u2063' + '\u2800' * 40 + '\u2063'
         self.panel(text,controls=self.home_controls(),view={'route':'home'},force=True)
 
     def notice(self, key, text):
