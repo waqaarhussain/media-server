@@ -54,7 +54,7 @@ class MenuTests(unittest.TestCase):
         self.assertNotEqual(mid,old)
         self.click('global:home')
         self.assertEqual(self.bot.state['ui']['message_id'],mid)
-        self.assertEqual(self.current()['text'], '\u2063')
+        self.assertEqual(self.current()['text'], '\u2063' + '\u2800' * 40 + '\u2063')
         self.assertEqual(sum(c.args[0]=='sendMessage' for c in self.bot.tg.call_args_list),3)
 
     def test_deleted_message_is_replaced_once(self):
@@ -78,14 +78,14 @@ class MenuTests(unittest.TestCase):
         self.assertTrue(any(c.args[0]=='editMessageMedia' for c in self.bot.tg.call_args_list))
         self.click('global:home')
         self.assertFalse(self.bot.state['ui']['photo'])
-        self.assertEqual(self.current()['text'], '\u2063')
+        self.assertEqual(self.current()['text'], '\u2063' + '\u2800' * 40 + '\u2063')
         self.assertEqual(len(self.telegram.messages),1)
 
     def test_start_displays_menu_without_waiting_for_radarr(self):
         self.bot.rad.side_effect=ServiceError('Radarr offline')
         self.message('/start')
         self.bot.rad.assert_not_called()
-        self.assertEqual(self.current()['text'], '\u2063')
+        self.assertEqual(self.current()['text'], '\u2063' + '\u2800' * 40 + '\u2063')
 
     def test_start_recovers_panel_hidden_only_on_phone(self):
         self.message('/start')
@@ -94,7 +94,7 @@ class MenuTests(unittest.TestCase):
         self.assertIn(hidden,self.telegram.messages)
         self.message('/start')
         self.assertNotIn(hidden,self.telegram.messages)
-        self.assertEqual(self.current()['text'], '\u2063')
+        self.assertEqual(self.current()['text'], '\u2063' + '\u2800' * 40 + '\u2063')
 
     def test_all_main_menu_routes_use_same_screen_and_keep_downloads(self):
         jobs=copy.deepcopy(self.bot.state['jobs'])
