@@ -582,7 +582,8 @@ class Bot:
                 self.state['old_panels'].append(old['message_id'])
             self.state['ui'] = None
         self.save()
-        text = '🎬 Movie menu\n\nWhat are we watching?\nChoose below, or send a movie name.'
+        # Telegram requires a non-empty message for an inline keyboard.
+        text = '\u2063'  # Invisible separator keeps the home menu buttons only.
         self.panel(text,controls=self.home_controls(),view={'route':'home'},force=True)
 
     def notice(self, key, text):
