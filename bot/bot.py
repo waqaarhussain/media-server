@@ -565,7 +565,7 @@ class Bot:
     def home_controls():
         return {'inline_keyboard':[
             [{'text':'🔎 Search movie','callback_data':'global:search'},
-             {'text':'📺 Search TV show','callback_data':'global:tvsearch'}],
+             {'text':'📺 Search TV','callback_data':'global:tvsearch'}],
             [{'text':'🎲 Random Movie','callback_data':'global:genres'}],
             [{'text':'📥 Downloads','callback_data':'global:downloads:0'},
              {'text':'✅ Library','callback_data':'global:library:0'}],
