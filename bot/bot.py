@@ -895,7 +895,49 @@ class Bot:
                           'ratings':{'imdb':{'value':row['score'],'votes':row['votes']}},'catalogue':True})
         return picks[:300]
 
+    def community_picks(self, genre, library, queued):
+        from community import MDBList, CommunityError
+        cache = self.state.setdefault('community_cache', {})
+        cached = cache.get(genre) or {}
+        if time.time()-cached.get('saved',0)<86400:
+            movies = cached.get('movies',[])
+        else:
+            try:
+                movies = MDBList(self.c['MDBLIST_API_KEY']).picks(genre, GENRES[genre])
+            except CommunityError as error:
+                raise ServiceError(str(error)) from None
+            cache[genre] = {'saved':time.time(), 'movies':movies}
+            self.save()
+        excluded = [m for m in library if m.get('hasFile') or m.get('id') in queued or
+                    str(m.get('id')) in self.state['jobs'] or str(m.get('id')) in self.state['deletions']]
+        tids = {m.get('tmdbId') for m in excluded if m.get('tmdbId')}
+        iids = {str(m.get('imdbId')).lower() for m in excluded if m.get('imdbId')}
+        return [dict(m) for m in movies if m.get('tmdbId') not in tids and
+                str(m.get('imdbId') or '').lower() not in iids]
+
     def hydrate_pick(self, movie):
+        if movie.get('community'):
+            if movie.get('hydrated'):
+                return movie
+            tid, iid = movie.get('tmdbId'), movie.get('imdbId')
+            term = 'tmdb:'+str(tid) if tid else 'imdb:'+str(iid)
+            try:
+                results = self.rad('movie/lookup?'+urllib.parse.urlencode({'term':term}), timeout=15)
+                full = next((m for m in results if (m.get('tmdbId')==tid if tid else m.get('imdbId')==iid)
+                             and not (iid and m.get('imdbId') and m['imdbId'].lower()!=iid.lower())), None)
+                if full:
+                    movie.update(discovery_movie(full), hydrated=True)
+                    genre = movie.get('community_genre')
+                    genres = {normal(g) for g in (movie.get('genres') or [])}
+                    # The list supplies theme membership; standard genres still
+                    # use the exact selected film's metadata rather than its title.
+                    if genre in GENRES and genre not in ('psychological','tvmovie'):
+                        movie['community_mismatch'] = normal(GENRES[genre]) not in genres
+                        if genre=='scifi':
+                            movie['community_mismatch'] = not bool(genres & {'science fiction','sci fi'})
+            except ServiceError:
+                pass
+            return movie
         if not movie.get('catalogue') or movie.get('hydrated'):
             return movie
         iid = movie['imdbId']
@@ -918,9 +960,11 @@ class Bot:
         rows = [[{'text':name,'callback_data':'global:genre:'+key} for key,name in items[i:i+2]]
                 for i in range(0,len(items),2)]
         rows.append([{'text':'‹ Back','callback_data':'global:home'}])
-        self.panel('🎲 Random Movie\n\nChoose a genre.\n'
-                   'IMDb 6.5+ with 10,000+ votes, ranked toward well-established favourites. Rotten Tomatoes is shown when available.\n\n'
-                   'Psychological Thrillers is a curated theme. Browsing never starts a download.',
+        source = ('Community movie lists via MDBList. Shared suggestions, no personal viewing history.\n\n'
+                  if self.c.get('MDBLIST_API_KEY') else
+                  'IMDb 6.5+ with 10,000+ votes, ranked toward well-established favourites.\n\n')
+        self.panel('🎲 Random Movie\n\nChoose a genre.\n'+source+
+                   'Psychological Thrillers is a list theme. Browsing never starts a download.',
                    controls={'inline_keyboard':rows},view={'route':'genres'},force=True)
 
     def random_movies(self, genre):
@@ -934,7 +978,15 @@ class Bot:
         queued = {q.get('movieId') for q in queue}
         excluded = {m.get('tmdbId') for m in library if m.get('hasFile') or m.get('id') in queued or
                     str(m.get('id')) in self.state['jobs'] or str(m.get('id')) in self.state['deletions']}
-        deck = self.catalogue_picks(genre,library,queued)
+        if self.c.get('MDBLIST_API_KEY'):
+            try:
+                deck = self.community_picks(genre,library,queued)
+            except ServiceError as error:
+                self.panel(str(error)+'\n\nMDBList recommendations are still selected. Try this genre again later.',
+                           controls=self.back_controls('global:genres'))
+                return
+        else:
+            deck = self.catalogue_picks(genre,library,queued)
         if deck is None:
             cache = self.state.get('discovery_cache') or {}
             if time.time()-cache.get('saved',0)>21600 or not cache.get('movies'):
@@ -948,8 +1000,9 @@ class Bot:
             deck = [m for m in cache['movies'] if m.get('tmdbId') not in excluded and recommended(m,genre)]
         secrets.SystemRandom().shuffle(deck)
         if not deck:
-            self.panel('🎲 '+GENRES[genre]+'\n\nNo matching movies are available in the current catalogue. '
-                       'Try another genre or refresh the catalogue by rerunning the update command.',
+            text = ('No matching movies found in the available MDBList community lists.'
+                    if self.c.get('MDBLIST_API_KEY') else 'No matching movies are available in the current catalogue.')
+            self.panel('🎲 '+GENRES[genre]+'\n\n'+text+' Try another genre.',
                        controls=self.back_controls('global:genres'))
             return
         self.state.pop('recommend_return',None)
@@ -967,7 +1020,8 @@ class Bot:
                        controls=self.back_controls('global:genres'))
             checked = movie.get('download_checked', 0)
             try:
-                available = movie.get('download_available') if time.time()-checked<300 else self.search_releases(movie, probe=True)
+                available = (False if movie.get('community') and (not movie.get('hydrated') or movie.get('community_mismatch')) else
+                             movie.get('download_available') if time.time()-checked<300 else self.search_releases(movie, probe=True))
             except ServiceError:
                 self.panel('Download availability could not be checked. Try again.',
                            [('Try again','reccheck'), ('‹ Back to genres','recgenres')])
@@ -999,7 +1053,9 @@ class Bot:
         text = (f"🎲 {GENRES[s['genre']]} · {s['index']+1}/{len(s['deck'])}\n\n"
                 f"🎬 {movie['title']} ({movie.get('year','?')})\n\n"
                 f"⭐ IMDb {imdb_text}\n🍅 Rotten Tomatoes: {rt}\n\nAbout the movie\n{overview}\n\n"
-                + ('IMDb public catalogue · other details via Radarr.' if movie.get('catalogue') else 'Ratings via Radarr metadata; may lag.'))
+                + ('MDBList community list: '+movie.get('community_list','')+'\n'+movie.get('community_url','')+
+                   '\nRatings and film details via Radarr.' if movie.get('community') else
+                   'IMDb public catalogue · other details via Radarr.' if movie.get('catalogue') else 'Ratings via Radarr metadata; may lag.'))
         choices = [('Find download','recselect')]
         if s['index']>0:
             choices.append(('Previous','recprev'))
@@ -1994,6 +2050,11 @@ def main():
             if "=" in line:
                 key, value = line.split("=", 1)
                 config[key] = value
+    recommendations = Path.home() / '.config/media-request-bot/recommendations.json'
+    if recommendations.exists():
+        options = json.loads(recommendations.read_text())
+        if options.get('source')=='mdblist' and isinstance(options.get('api_key'),str) and options['api_key']:
+            config['MDBLIST_API_KEY'] = options['api_key']
     directory = Path.home() / ".local/state/media-request-bot"
     directory.mkdir(parents=True, exist_ok=True)
     with open(directory / "process.lock", "w") as lock:
