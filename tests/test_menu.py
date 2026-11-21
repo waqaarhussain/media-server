@@ -42,7 +42,7 @@ class MenuTests(unittest.TestCase):
     def message(self,text):
         self.bot.handle({'message':{'from':{'id':1},'chat':{'id':1,'type':'private'},'text':text}})
     def current(self):
-        self.assertEqual(len(self.telegram.messages),1)
+        self.assertEqual(sum('reply_markup' in m for m in self.telegram.messages.values()),1)
         return self.telegram.messages[self.bot.state['ui']['message_id']]
 
     def test_explicit_start_replaces_old_panel_but_buttons_reuse_the_new_one(self):
@@ -79,7 +79,7 @@ class MenuTests(unittest.TestCase):
         self.click('global:home')
         self.assertFalse(self.bot.state['ui']['photo'])
         self.assertEqual(self.current()['text'], '\u2063' + '\u2800' * 40 + '\u2063')
-        self.assertEqual(len(self.telegram.messages),1)
+        self.assertEqual(sum('reply_markup' in m for m in self.telegram.messages.values()),1)
 
     def test_start_displays_menu_without_waiting_for_radarr(self):
         self.bot.rad.side_effect=ServiceError('Radarr offline')
@@ -137,7 +137,7 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(self.events,[])
         self.current()
 
-    def test_background_progress_and_ready_do_not_create_messages_or_hijack_search(self):
+    def test_completion_alert_does_not_hijack_search(self):
         self.message('/start')
         self.click('global:search')
         screen=copy.deepcopy(self.current())
@@ -148,6 +148,9 @@ class MenuTests(unittest.TestCase):
         self.bot.check_downloads()
         self.bot.refresh_visible()
         self.assertEqual(self.current(),screen)
+        alerts = [m for m in self.telegram.messages.values() if 'reply_markup' not in m]
+        self.assertEqual(len(alerts),1)
+        self.assertIn('is ready',alerts[0]['text'])
         self.assertIn('ready:42',self.bot.state['notices'])
         self.click('global:home')
         self.assertNotIn('Latest updates',self.current()['text'])
