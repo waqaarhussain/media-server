@@ -111,8 +111,41 @@ class SlickTests(unittest.TestCase):
         self.bot.check_downloads()
         self.bot.check_downloads()
         self.assertEqual(self.bot.state['jobs']['42']['status'],'imported')
-        self.assertEqual(sum(c.args[0]=='sendMessage' for c in self.bot.tg.call_args_list),0)
+        self.assertEqual(sum(c.args[0]=='sendMessage' for c in self.bot.tg.call_args_list),1)
+        alert = self.bot.tg.call_args.args[1]
+        self.assertIn('Example is ready',alert['text'])
+        self.assertIn('Imported into your library',alert['text'])
+        self.assertNotIn('reply_markup',alert)
         self.assertIn('ready:42',self.bot.state['notices'])
+
+    def test_completion_alert_retries_after_telegram_failure_and_survives_restart(self):
+        self.bot.state['jobs']['42']={'title':'Example','status':'submitted'}
+        imported = {**self.movie,'hasFile':True,'movieFileId':9}
+        self.bot.rad.side_effect=[{'records':[]},imported,{'records':[]},imported]
+        self.bot.tg.side_effect=ServiceError('Telegram unavailable')
+        with self.assertRaises(ServiceError):
+            self.bot.check_downloads()
+        self.assertFalse(self.bot.state['jobs']['42'].get('ready_notified'))
+        self.assertNotEqual(self.bot.state['jobs']['42']['status'],'imported')
+        self.bot.tg.side_effect=None
+        self.bot.check_downloads()
+        restarted=Bot(self.config,self.bot.directory)
+        restarted.tg=Mock()
+        restarted.rad=Mock()
+        restarted.check_downloads()
+        restarted.tg.assert_not_called()
+        restarted.rad.assert_not_called()
+        self.assertTrue(restarted.state['jobs']['42']['ready_notified'])
+
+    def test_upgrade_completion_waits_for_replacement_file(self):
+        self.bot.state['jobs']['42']={'title':'Example','status':'submitted','upgradeFromFileId':9}
+        self.bot.rad.side_effect=[{'records':[]},{**self.movie,'hasFile':True,'movieFileId':9},
+                                  {'records':[]},{**self.movie,'hasFile':True,'movieFileId':10}]
+        self.bot.check_downloads()
+        self.bot.tg.assert_not_called()
+        self.bot.check_downloads()
+        self.bot.tg.assert_called_once()
+        self.assertIn('Example is ready',self.bot.tg.call_args.args[1]['text'])
 
     def test_availability_alert_opt_in_preserves_no_preview(self):
         self.bot.remember_preview(self.movie)
