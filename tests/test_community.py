@@ -1,17 +1,40 @@
 import json
 import tempfile
 import unittest
+import urllib.error
 import urllib.parse
+import io
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from bot import Bot, ServiceError
-from community import MDBList, CommunityError
+from community import MDBList, CommunityError, fetch_json
 import test_menu
 from test_manage import manage
 
 
 class CommunityClientTests(unittest.TestCase):
+    def test_http_requests_use_explicit_application_headers(self):
+        with patch('community.urllib.request.urlopen',return_value=io.BytesIO(b'[]')) as fetch:
+            self.assertEqual(fetch_json('https://api.mdblist.com/genres/?apikey=private-key'),[])
+        request=fetch.call_args.args[0]
+        self.assertTrue(request.get_header('User-agent').startswith('media-server/'))
+        self.assertEqual(request.get_header('Accept'),'application/json')
+
+    def test_http_errors_report_actual_cause_without_exposing_key(self):
+        for code,body,expected in ((403,b'error code: 1010','web firewall'),
+                                   (403,b'Forbidden','API permissions'),
+                                   (401,b'Invalid API key','authentication'),
+                                   (429,b'limit','limit reached'),
+                                   (503,b'unavailable','HTTP 503')):
+            error=urllib.error.HTTPError('https://api.mdblist.com/?apikey=private-key',
+                                         code,'Rejected',{},io.BytesIO(body))
+            api=MDBList('private-key',fetch=Mock(side_effect=error))
+            with self.assertRaises(CommunityError) as caught:
+                api.verify()
+            self.assertIn(expected,str(caught.exception))
+            self.assertNotIn('private-key',str(caught.exception))
+
     def test_public_movie_lists_sorted_by_likes_deduplicated_and_no_show_or_adult(self):
         sources = [{'id':i,'name':'Thrillers '+str(i),'mediatype':'movie','likes':likes,
                     'user_name':'alice','slug':'thrillers-'+str(i)} for i,likes in ((1,2),(2,10),(3,5),(4,1))]
