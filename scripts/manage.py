@@ -146,13 +146,13 @@ def deploy_bot(cfg, start=True):
         directory.chmod(0o700)
         os.chown(directory, cfg['uid'], cfg['gid'])
     # Compile before stopping the installed bot. Download, watch and deletion ledgers survive.
-    for name in ('bot.py', 'catalog.py', 'year_adapter.py', 'search_art.py'):
+    for name in ('bot.py', 'catalog.py', 'year_adapter.py', 'search_art.py', 'community.py'):
         source = (REPO / 'bot' / name).read_text()
         compile(source, name, 'exec')
     was_running = active('media-request-bot.service')
     if was_running:
         run(['systemctl', 'stop', 'media-request-bot.service'])
-    for name in ('bot.py', 'catalog.py', 'year_adapter.py', 'search_art.py'):
+    for name in ('bot.py', 'catalog.py', 'year_adapter.py', 'search_art.py', 'community.py'):
         if (target / name).exists():
             shutil.copy2(target / name, target / (name + '.previous'))
         atomic(target / name, (REPO / 'bot' / name).read_text())
@@ -676,10 +676,39 @@ def dolby_quality(cfg):
     print('Search the movie again in Telegram to refresh the release scores. No downloads were started.')
 
 
+def recommendations(cfg):
+    """Configure the shared, read-only movie recommendation source locally."""
+    sys.path.insert(0, str(REPO / 'bot'))
+    from community import MDBList, CommunityError
+    print('1. MDBList community movie lists (shared, no personal history)')
+    print('2. Return to the existing IMDb catalogue')
+    choice = prompt('Recommendation source', '1')
+    path = Path(cfg['home']) / '.config/media-request-bot/recommendations.json'
+    if choice == '1':
+        print('Get your API key at https://mdblist.com/preferences/#api')
+        key = prompt('MDBList API key (hidden)', secret=True).strip()
+        if not re.fullmatch(r'[A-Za-z0-9_-]{8,200}', key):
+            raise ValueError('Invalid API key format. Existing settings were kept.')
+        try:
+            MDBList(key).verify()
+        except CommunityError as error:
+            raise ValueError(str(error)) from None
+        data = {'source':'mdblist', 'api_key':key}
+    elif choice == '2':
+        data = {'source':'imdb'}
+    else:
+        raise ValueError('Choose 1 or 2. Existing settings were kept.')
+    atomic(path, json.dumps(data)+'\n')
+    own(path.parent, cfg)
+    run(['systemctl', 'restart', 'media-request-bot.service'])
+    print('Recommendation source saved. Reopen Random Movie in Telegram.')
+    print('This changes discovery only. No movie searches or downloads were started.')
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('install', 'update', 'backup', 'restore', 'paths', 'setup', 'status', 'start', 'stop', 'quality', 'indexers', 'indexers-undo', 'indexers-check', 'years', 'years-undo'))
+    parser.add_argument('command', choices=('install', 'update', 'backup', 'restore', 'paths', 'setup', 'status', 'start', 'stop', 'quality', 'recommendations', 'indexers', 'indexers-undo', 'indexers-check', 'years', 'years-undo'))
     parser.add_argument('filename', nargs='?')
     parser.add_argument('--restore', dest='snapshot')
     parser.add_argument('--user')
@@ -704,6 +733,8 @@ def main():
         paths(cfg)
     elif args.command == 'quality':
         dolby_quality(cfg)
+    elif args.command == 'recommendations':
+        recommendations(cfg)
     elif args.command == 'indexers-check':
         from public_indexers import diagnose
         diagnose(api)
