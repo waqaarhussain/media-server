@@ -1234,6 +1234,9 @@ class Bot:
                 text = f"✅ {job['title']} is ready\n\nImported into your library.\n\nRefresh Infuse if it hasn’t appeared yet."
                 self.publish_job(job,text,mid)
                 if not job.get("ready_notified"):
+                    # A separate completion alert must not replace the active menu.
+                    # Only mark delivered after Telegram accepts it, allowing retries.
+                    self.tg('sendMessage', {'chat_id':self.chat, 'text':text})
                     self.notice("ready:"+mid,"✅ "+job["title"]+" is ready")
                     job["ready_notified"] = True
                 job["status"] = "imported"
