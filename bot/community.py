@@ -2,6 +2,7 @@
 import datetime
 import json
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -11,7 +12,10 @@ class CommunityError(Exception):
 
 
 def fetch_json(url):
-    with urllib.request.urlopen(url, timeout=15) as response:
+    request = urllib.request.Request(url, headers={
+        'User-Agent':'media-server/1.0 (+https://github.com/waqaarhussain/media-server)',
+        'Accept':'application/json'})
+    with urllib.request.urlopen(request, timeout=15) as response:
         return json.load(response)
 
 
@@ -28,11 +32,27 @@ class MDBList:
             if isinstance(data, dict) and any(k in data for k in ('error', 'detail')):
                 raise ValueError('API error')
             return data
+        except urllib.error.HTTPError as error:
+            if error.code == 403:
+                body = error.read(2048).decode(errors='replace').lower()
+                if '1010' in body or 'cloudflare' in body:
+                    raise CommunityError('MDBList blocked this server request (HTTP 403 / web firewall). '
+                                         'The API key was not validated.') from None
+                raise CommunityError('MDBList refused access (HTTP 403). Check your account API permissions.') from None
+            if error.code == 401:
+                raise CommunityError('MDBList rejected authentication (HTTP 401). Copy the current API key from Preferences.') from None
+            if error.code == 429:
+                raise CommunityError('MDBList request limit reached (HTTP 429). Try again after the limit resets.') from None
+            raise CommunityError('MDBList returned HTTP '+str(error.code)+'. Try again later.') from None
+        except urllib.error.URLError:
+            raise CommunityError('Could not connect securely to MDBList. Check the server network and try again.') from None
+        except json.JSONDecodeError:
+            raise CommunityError('MDBList returned a non-JSON response. Its API or web firewall may be unavailable.') from None
         except Exception:
             raise CommunityError('MDBList is unavailable, the API key is invalid, or its request limit was reached.') from None
 
     def verify(self):
-        data = self.get('genres')
+        data = self.get('genres/')
         if not isinstance(data, list) or not any(isinstance(g, dict) and g.get('slug') for g in data):
             raise CommunityError('MDBList did not return a valid genre list. Existing settings were kept.')
 
