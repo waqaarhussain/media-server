@@ -85,6 +85,7 @@ Each batch uses a private journal under the bot state directory (included in bac
 | Command | Purpose |
 | --- | --- |
 | `update-live` | Pull main and deploy the latest Telegram bot/services. Preserve app config and tracked downloads. |
+| `media-server recommendations` | Select shared MDBList community movie lists or return to the IMDb catalogue. |
 | `media-server backup` | Create an encrypted snapshot, excluding movie files. |
 | `media-server restore FILE.tar.gz.gpg` | Restore to an otherwise fresh installation. |
 | `media-server paths` | Change Movies/Kids Movies paths after storage is mounted. Never move/delete movie files. |
@@ -131,3 +132,15 @@ Run `update-live && media-server years` to enable the optional **Media Server Ve
 Only movie sources already connected and enabled for interactive search in Radarr are queried, with source tags respected. Candidate release titles must match the selected canonical/original title and a verified year. Conflicting IMDb/TMDb attributes, sequels and ambiguous titles are discarded. Original release labels remain unchanged, including AI-upscale/60FPS labels. Returned releases still undergo Radarr's normal parsing, identity and quality decisions, then the bot's existing filters and final approval/revalidation. No forced grabs or release-push endpoint are used. A candidate may still be rejected by Radarr; this adapter expands discovery rather than overriding those rejections.
 
 The adapter has RSS disabled. Enabling it starts no movie search or download. Existing search buttons in Radarr retain their normal behavior, so use **Interactive Search** for testing. Setup stores private connection settings under the existing bot config directory, included in encrypted backups, and adds one owned Radarr indexer. `media-server years-undo` removes only that connection and disables the listener. It does not revert the separately added public indexers. A full pre-indexer backup remains the way to restore the complete earlier setup on a fresh installation. Live end-to-end behavior must be verified on your VPS after installation.
+
+## Shared community recommendations
+
+After `update-live`, run `media-server recommendations`. Choose MDBList and enter your API key from https://mdblist.com/preferences/#api at the hidden prompt. The helper verifies the key before saving and restarts the bot. Reopen Random Movie in Telegram. Until configured, the existing IMDb recommendations remain active. Choose option 2 in the same helper to switch back.
+
+With MDBList selected, each genre searches public movie lists and selects up to three sorted by the API's list-like count. Up to 100 ranked films per list are combined and deduplicated. Lists are community-created and may be dynamic; being popular does not guarantee a particular person's taste. Psychological Thrillers uses matching thematic lists rather than the old hardcoded IMDb theme. Recommendations are shared by all users. No personal watch history or ratings are read or written.
+
+The bot resolves each film through its exact TMDb/IMDb ID in Radarr, checks standard genres against the resolved metadata, excludes owned/queued titles and still requires a currently eligible download. Movie source cards identify the MDBList list and link when available. Ratings and descriptions continue to come through Radarr. The IMDb recommendation score/vote cutoff does not control MDBList list membership.
+
+Results are cached for 24 hours per genre. An uncached genre uses a list-search request and up to three list-item requests; limits depend on your MDBList account. API failures are shown explicitly rather than silently switching back to IMDb. Only GET requests are used, and no lists are added to Radarr. Discovery itself never starts a download.
+
+The API key is stored locally in `~/.config/media-request-bot/recommendations.json` with private permissions. It is included in the encrypted migration backup with the rest of the bot configuration. Enter it on the server, not in Telegram or GitHub. Run `media-server backup` after configuring it. Live MDBList access needs your own valid key and has not been verified by the automated tests.
