@@ -10,8 +10,11 @@ import os
 from pathlib import Path
 import pwd
 import subprocess
+import socket
+import ssl
 import sys
 import urllib.parse
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -52,26 +55,70 @@ PORTABLE_KEYS-={'export_dir','export_dir_fin','torrent_files_backup_dir_enabled'
                'outgoing_ports_min','outgoing_ports_max'}
 
 
+class RequestError(ValueError):
+    """Safe diagnostics with endpoint/status only, never raw replies or credentials."""
+
+
+class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+    def __init__(self,origin):self.origin=origin
+    def redirect_request(self,req,fp,code,msg,headers,newurl):
+        parsed=urllib.parse.urlsplit(newurl)
+        target=urllib.parse.urlunsplit((parsed.scheme,parsed.netloc,'','',''))
+        if target!=self.origin:
+            raise RequestError('The WebUI redirects to another address. Enter its final HTTPS WebUI URL manually.')
+        return super().redirect_request(req,fp,code,msg,headers,newurl)
+
+
 class Client:
     def __init__(self,url):
+        url=url.strip()
         parsed=urllib.parse.urlsplit(url)
         if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError('Enter a plain HTTP/HTTPS qBittorrent WebUI URL without credentials or query parameters.')
         self.origin=urllib.parse.urlunsplit((parsed.scheme,parsed.netloc,'','',''))
+        self.referer=url.rstrip('/')+'/'
         self.url=url.rstrip('/')+'/api/v2/'
-        self.opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        self.opener=urllib.request.build_opener(SameOriginRedirect(self.origin),
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     def call(self,endpoint,values=None,json_result=False):
         data=None if values is None else urllib.parse.urlencode(values).encode()
-        req=urllib.request.Request(self.url+endpoint,data,headers={'Referer':self.origin+'/', 'Origin':self.origin})
+        req=urllib.request.Request(self.url+endpoint,data,headers={
+            'Referer':self.referer,'Origin':self.origin,
+            'User-Agent':'media-server-backup/1.0',
+            'Accept':'application/json' if json_result else '*/*',
+            **({'Content-Type':'application/x-www-form-urlencoded'} if data is not None else {})})
         try:
             with self.opener.open(req,timeout=30) as response:body=response.read(8*1024*1024+1)
-            if len(body)>8*1024*1024:raise ValueError('Response too large')
-            return json.loads(body) if json_result else body.decode()
-        except Exception:
-            raise ValueError('qBittorrent request failed. Check its address, credentials and connection. Details suppressed.') from None
+        except urllib.error.HTTPError as error:
+            hints={401:'Authentication was refused.',
+                   403:'Access was refused. This can be a login/IP ban, Host/Origin check or provider proxy rule.',
+                   404:'The API path was not found. Check the WebUI address and any URL subpath.',
+                   405:'The server refused the API request method.',
+                   429:'Too many requests. Wait before retrying.'}
+            raise RequestError(f'qBittorrent {endpoint}: HTTP {error.code}. '+hints.get(error.code,'The server or proxy returned an error.')) from None
+        except urllib.error.URLError as error:
+            reason=error.reason
+            if isinstance(reason,ssl.SSLCertVerificationError):hint='TLS certificate verification failed. Use the correct HTTPS hostname.'
+            elif isinstance(reason,socket.gaierror):hint='The server hostname could not be resolved.'
+            elif isinstance(reason,ConnectionRefusedError):hint='The connection was refused. Check the port and whether the app is online.'
+            elif isinstance(reason,(TimeoutError,socket.timeout)):hint='Connection timed out.'
+            else:hint='The server could not be reached. Check its address, port and network access.'
+            raise RequestError('qBittorrent '+endpoint+': '+hint) from None
+        except (TimeoutError,socket.timeout):
+            raise RequestError('qBittorrent '+endpoint+': request timed out.') from None
+        except OSError:
+            raise RequestError('qBittorrent '+endpoint+': network connection failed.') from None
+        if len(body)>8*1024*1024:raise RequestError('qBittorrent '+endpoint+': response exceeded the size limit.')
+        try:
+            text=body.decode()
+            if text.lstrip().lower().startswith(('<!doctype html','<html')):
+                raise RequestError('qBittorrent '+endpoint+': received an HTML login/proxy page instead of the API. Enter the direct WebUI URL.')
+            return json.loads(text) if json_result else text
+        except (UnicodeDecodeError,json.JSONDecodeError):
+            raise RequestError('qBittorrent '+endpoint+': response was not a valid API response. Check the WebUI URL.') from None
     def login(self,username,password):
         if self.call('auth/login',{'username':username,'password':password}).strip()!='Ok.':
-            raise ValueError('qBittorrent login failed.')
+            raise RequestError('qBittorrent rejected the username/password. Use the WebUI credentials shown by AppBox.')
 
 
 def validate(document):
@@ -207,8 +254,15 @@ def capture_live(url_override=None):
         url=url_override or input('Current qBittorrent WebUI URL (including port/path): ').strip()
         username=input('Current qBittorrent username: ').strip()
         password=getpass.getpass('Current qBittorrent password: ')
-    client=Client(url);client.login(username,password)
-    return capture(client)
+    try:
+        client=Client(url);client.login(username,password)
+        return capture(client)
+    except RequestError as error:
+        if not choices:raise
+        print(str(error))
+        if input('Retry with a manually entered WebUI URL/login? [y/N]: ').strip().lower() not in ('y','yes'):
+            raise
+        return capture_live(input('Current qBittorrent WebUI URL (including port/path): ').strip())
 
 
 def export(args):
@@ -236,7 +290,10 @@ def main():
     parser.add_argument('command',choices=['export']);parser.add_argument('--url')
     args=parser.parse_args()
     try:export(args)
-    except (ValueError,OSError,TypeError):
+    except ValueError as error:
+        print('qBittorrent export stopped: '+str(error),file=sys.stderr)
+        raise SystemExit(1)
+    except (OSError,TypeError):
         print('qBittorrent export stopped. Check the connection, passphrase and destination. Credentials suppressed.',file=sys.stderr)
         raise SystemExit(1)
 

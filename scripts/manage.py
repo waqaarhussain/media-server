@@ -334,7 +334,7 @@ def revision():
     return exported.read_text().strip() if exported.exists() else 'unversioned-source-archive'
 
 
-def backup(cfg, destination=None):
+def backup(cfg, destination=None, qbit_url=None):
     home = Path(cfg['home'])
     folder = home / 'media-server-backups'
     folder.mkdir(parents=True, exist_ok=True)
@@ -347,7 +347,7 @@ def backup(cfg, destination=None):
     # Capture while qBittorrent and Radarr are still available. A failed capture
     # aborts rather than silently producing an incomplete migration backup.
     import qbit_migrate
-    qbit_settings = qbit_migrate.capture_live()
+    qbit_settings = qbit_migrate.capture_live(qbit_url) if qbit_url else qbit_migrate.capture_live()
     secret = passphrase(confirm=True)
     versions = {}
     for lower in APPS:
@@ -719,7 +719,10 @@ def main():
     parser.add_argument('filename', nargs='?')
     parser.add_argument('--restore', dest='snapshot')
     parser.add_argument('--user')
+    parser.add_argument('--qbit-url', help='Use this qBittorrent WebUI URL and prompt for login during backup')
     args = parser.parse_args()
+    if args.qbit_url and args.command != 'backup':
+        parser.error('--qbit-url is only valid with backup.')
     if os.geteuid() != 0:
         parser.error('Run through media-server, update-live or sudo install.sh.')
     cfg = account(args.user)
@@ -731,7 +734,7 @@ def main():
             raise ValueError('Saved credentials missing. Run media-server setup.')
         print('Bot updated. Radarr/Prowlarr settings and download state preserved.')
     elif args.command == 'backup':
-        backup(cfg, args.filename)
+        backup(cfg, args.filename, qbit_url=args.qbit_url)
     elif args.command == 'restore':
         if not args.filename:
             parser.error('restore requires the encrypted backup filename.')

@@ -85,4 +85,14 @@ class CombinedBackupTests(unittest.TestCase):
             client.return_value.login.assert_called_once_with('user','password')
 
 
+class BackupCommandTests(unittest.TestCase):
+    def test_backup_url_override_is_passed_to_combined_backup(self):
+        cfg={'home':'/fixture/home','user':'fixture'}
+        with patch.object(manage.sys,'argv',['manage.py','backup','--qbit-url','https://example.test']), \
+             patch.object(manage.os,'geteuid',return_value=0),patch.object(manage,'account',return_value=cfg), \
+             patch.object(manage,'backup') as backup:
+            manage.main()
+            backup.assert_called_once_with(cfg,None,qbit_url='https://example.test')
+
+
 if __name__=='__main__':unittest.main()

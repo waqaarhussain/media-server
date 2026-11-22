@@ -154,3 +154,15 @@ The bot resolves each film through its exact TMDb/IMDb ID in Radarr, checks stan
 Results are cached for 24 hours per genre. An uncached genre uses a list-search request and up to three list-item requests; limits depend on your MDBList account. API failures are shown explicitly rather than silently switching back to IMDb. Only GET requests are used, and no lists are added to Radarr. Discovery itself never starts a download.
 
 The API key is stored locally in `~/.config/media-request-bot/recommendations.json` with private permissions. It is included in the encrypted migration backup with the rest of the bot configuration. Enter it on the server, not in Telegram or GitHub. Run `media-server backup` after configuring it. Live MDBList access needs your own valid key and has not been verified by the automated tests.
+
+### qBittorrent backup connection troubleshooting
+
+If Radarr's saved connection cannot be used for the backup, the helper reports the failing API endpoint and a safe HTTP/network error, then offers a manual WebUI URL/login retry. It never prints response bodies, passwords or session cookies. A normal client User-Agent is supplied, and API authentication uses matching Origin/Referer headers with an in-memory cookie jar. A redirect to another origin is refused instead of forwarding login data there.
+
+You can bypass the saved connection explicitly and still create one combined backup:
+
+```bash
+media-server backup --qbit-url https://YOUR_QBIT_WEBUI_HOST
+```
+
+Enter the existing qBittorrent WebUI username/password at the prompts, not in the command. This does not change Radarr's saved connection or qBittorrent's settings. Authentication and settings reads must succeed before the backup begins. HTTP 403 alone does not distinguish a temporary login/IP ban from a Host/Origin or provider proxy restriction. Avoid repeated password guesses; use the credentials shown by your provider.
