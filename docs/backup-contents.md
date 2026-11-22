@@ -7,6 +7,7 @@ The archive is a media-stack snapshot, not a full operating-system disk image. I
 ```
 snapshot/
   manifest.json
+  qbit-settings.json  qBittorrent application preferences and category definitions
   radarr/          database and app configuration
   prowlarr/        database and app configuration
   binaries/        exact installed Radarr and Prowlarr bundles
@@ -24,3 +25,7 @@ The snapshot has no movie folders, downloads directory, qBittorrent payloads, Ap
 Files under `host-reference` are retained for human review. Automatic restore does not replay a source VPS's fstab, DNS, certificates, Nginx sites or cron tasks on another provider. The snapshot does not create or reconnect a storage mount. Set that up first, then use the preserved reference files where appropriate.
 
 No backup is created in GitHub. Backups are generated only by running the helper on the source VPS and then copying the resulting encrypted file somewhere durable.
+
+New backups include qBittorrent settings in this same archive and use no second encryption passphrase. The helper reads the saved Radarr connection before stopping services. It prompts for a connection only if discovery is ambiguous/unavailable, and stops on capture failure. It does not export qBittorrent torrent entries, resume data, per-torrent settings or payloads. A separate AppBox app slot is accessed through its WebUI API; nothing needs to run inside that slot.
+
+The dedicated-server installer in `media-server-vps` consumes these embedded settings automatically and rewrites their paths. It starts a fresh Radarr library/history and does not replay old qBittorrent jobs. Custom AppBox scripts, host bindings and unsupported settings require review rather than automatic activation. Older archives without this member remain usable with the installer's separate-export/fresh-defaults fallback.

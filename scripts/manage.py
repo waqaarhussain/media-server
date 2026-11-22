@@ -344,6 +344,10 @@ def backup(cfg, destination=None):
     destination = Path(destination) if destination else folder / ('media-server-' + stamp + '.tar.gz.gpg')
     if destination.exists():
         raise ValueError('Backup destination exists. Choose a new filename.')
+    # Capture while qBittorrent and Radarr are still available. A failed capture
+    # aborts rather than silently producing an incomplete migration backup.
+    import qbit_migrate
+    qbit_settings = qbit_migrate.capture_live()
     secret = passphrase(confirm=True)
     versions = {}
     for lower in APPS:
@@ -353,6 +357,7 @@ def backup(cfg, destination=None):
         temp = Path(temp)
         snapshot = temp / 'snapshot'
         snapshot.mkdir(mode=0o700)
+        atomic(snapshot / 'qbit-settings.json', json.dumps(qbit_settings, allow_nan=False) + '\n')
         try:
             for service in running:
                 run(['systemctl', 'stop', service])
@@ -391,7 +396,8 @@ def backup(cfg, destination=None):
                         atomic(snapshot / 'host-reference' / ('crontab-' + username + '.txt'), cron.stdout)
             manifest = {'schema': 1, 'created': stamp, 'architecture': platform.machine(),
                         'libc': platform.libc_ver(), 'versions': versions, 'home': cfg['home'],
-                        'user': cfg['user'], 'repository_commit': revision()}
+                        'user': cfg['user'], 'repository_commit': revision(),
+                        'qbit_settings': {'schema': 1, 'version': qbit_settings.get('version')}}
             atomic(snapshot / 'manifest.json', json.dumps(manifest, indent=2) + '\n')
             snapshot_copy(REPO, snapshot / 'repository',
                           ('.git', '__pycache__', '*.pyc', '*.gpg', '*.env', 'backups', 'runtime'))
@@ -420,6 +426,7 @@ def backup(cfg, destination=None):
         finally:
             if output.exists():
                 output.unlink()
+    print('qBittorrent preferences and categories included. No torrent entries or media payloads copied.')
     print('Encrypted backup saved. Copy this file off the VPS and keep its passphrase separately:')
     print(destination)
 

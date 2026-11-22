@@ -32,6 +32,16 @@ The installer adopts existing `/opt/Radarr`, `/opt/Prowlarr`, `/var/lib/radarr`,
 
 Backup asks for an encryption passphrase twice and prints one `.tar.gz.gpg` path under `~/media-server-backups`. Copy that file to your third-party storage. Keep the passphrase separately. The databases are copied while the relevant services are stopped briefly; those previously running are restarted, including if the copy fails. Encryption happens after services restart.
 
+The backup now also reads qBittorrent's application preferences and category definitions through the connection saved in Radarr, including when qBittorrent runs in a separate AppBox app slot. Several categories on the same connection are captured once. Multiple distinct clients prompt for a choice; missing connections prompt for the WebUI URL/login. A failed capture stops the backup before services stop, rather than silently omitting qBittorrent. The qBittorrent settings are inside the same encrypted archive under `snapshot/qbit-settings.json`, using the same archive passphrase. No qBittorrent torrent queue, resume files, media files or download history is exported.
+
+After updating on the current Ubuntu VM, run:
+
+```bash
+update-live && media-server backup
+```
+
+For migration to a fresh dedicated server, use the [media-server-vps installer](https://github.com/waqaarhussain/media-server-vps). It automatically reads the embedded qBittorrent settings, remaps category/save paths and imports portable preferences while starting Radarr's library/history fresh. The standalone legacy restore below does not provision a replacement qBittorrent app slot.
+
 **The repository alone is not a backup of live settings.** Run `media-server backup` on the current VPS. Until that happens, no live snapshot has been captured. Run it again after changing profiles/indexers/client settings, or before migration.
 
 ## What the encrypted snapshot includes
@@ -117,7 +127,7 @@ Apply Dolby preferences on an existing installation with `update-live && media-s
 ## Validation and maintenance
 
 ```bash
-PYTHONPATH=bot:tests python3 -m unittest discover -s tests -q
+PYTHONPATH=scripts:bot:tests python3 -m unittest discover -s tests -q
 bash -n bootstrap.sh install.sh scripts/update-live scripts/media-server
 ```
 

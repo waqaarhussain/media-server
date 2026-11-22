@@ -8,4 +8,4 @@ jobs:
       - name: Syntax and unit tests
         run: |
           bash -n bootstrap.sh install.sh scripts/update-live scripts/media-server
-          PYTHONPATH=bot:tests python3 -m unittest discover -s tests -q
+          PYTHONPATH=scripts:bot:tests python3 -m unittest discover -s tests -q
