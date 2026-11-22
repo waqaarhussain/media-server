@@ -54,7 +54,7 @@ class ConnectionDiagnosticsTests(unittest.TestCase):
 
     def test_wrong_login_is_explicit(self):
         client=q.Client('https://example.test')
-        with patch.object(client,'call',return_value='Fails.'),self.assertRaisesRegex(q.RequestError,'username/password'):
+        with patch.object(client,'call',return_value='Fails.'),self.assertRaisesRegex(q.RequestError,'credentials'):
             client.login('admin','not-in-error')
 
     def test_saved_connection_failure_can_retry_manual_url_without_changing_radarr(self):

@@ -78,6 +78,7 @@ class Client:
         self.origin=urllib.parse.urlunsplit((parsed.scheme,parsed.netloc,'','',''))
         self.referer=url.rstrip('/')+'/'
         self.url=url.rstrip('/')+'/api/v2/'
+        self.last_status=None
         self.opener=urllib.request.build_opener(SameOriginRedirect(self.origin),
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     def call(self,endpoint,values=None,json_result=False):
@@ -88,7 +89,9 @@ class Client:
             'Accept':'application/json' if json_result else '*/*',
             **({'Content-Type':'application/x-www-form-urlencoded'} if data is not None else {})})
         try:
-            with self.opener.open(req,timeout=30) as response:body=response.read(8*1024*1024+1)
+            with self.opener.open(req,timeout=30) as response:
+                self.last_status=getattr(response,'status',200)
+                body=response.read(8*1024*1024+1)
         except urllib.error.HTTPError as error:
             hints={401:'Authentication was refused.',
                    403:'Access was refused. This can be a login/IP ban, Host/Origin check or provider proxy rule.',
@@ -117,8 +120,13 @@ class Client:
         except (UnicodeDecodeError,json.JSONDecodeError):
             raise RequestError('qBittorrent '+endpoint+': response was not a valid API response. Check the WebUI URL.') from None
     def login(self,username,password):
-        if self.call('auth/login',{'username':username,'password':password}).strip()!='Ok.':
-            raise RequestError('qBittorrent rejected the username/password. Use the WebUI credentials shown by AppBox.')
+        reply=self.call('auth/login',{'username':username,'password':password}).strip()
+        # qBittorrent 5.2+ returns 204 with an empty body; older releases return
+        # 200 + Ok. CookieJar retains the cookie name issued by either version.
+        if reply=='Ok.' or (self.last_status==204 and not reply):return
+        if reply=='Fails.':
+            raise RequestError('qBittorrent rejected the login credentials.')
+        raise RequestError('qBittorrent returned an unexpected login response (HTTP '+str(self.last_status)+'). Credentials were not verified.')
 
 
 def validate(document):

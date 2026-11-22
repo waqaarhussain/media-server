@@ -62,9 +62,11 @@ class Qbit:
         if not self.category:
             raise ServiceError('A dedicated Radarr torrent category is required for bot deletion.')
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-        if self.call('auth/login', {'username': fields.get('username') or '',
-                                    'password': fields.get('password') or ''}, raw=True).strip() != 'Ok.':
-            raise ServiceError('Download-client login failed. Nothing deleted.')
+        self.last_status = None
+        reply = self.call('auth/login', {'username': fields.get('username') or '',
+                                        'password': fields.get('password') or ''}, raw=True).strip()
+        if not (reply == 'Ok.' or (self.last_status == 204 and not reply)):
+            raise ServiceError('Download-client login response was not accepted. Nothing deleted.')
 
     def call(self, endpoint, data=None, raw=False):
         body = None if data is None else urllib.parse.urlencode(data).encode()
@@ -73,6 +75,7 @@ class Qbit:
             'Content-Type': 'application/x-www-form-urlencoded'})
         try:
             with self.opener.open(req, timeout=25) as response:
+                self.last_status = getattr(response, 'status', 200)
                 text = response.read().decode()
             return text if raw else json.loads(text)
         except Exception:

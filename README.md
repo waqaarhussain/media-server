@@ -166,3 +166,5 @@ media-server backup --qbit-url https://YOUR_QBIT_WEBUI_HOST
 ```
 
 Enter the existing qBittorrent WebUI username/password at the prompts, not in the command. This does not change Radarr's saved connection or qBittorrent's settings. Authentication and settings reads must succeed before the backup begins. HTTP 403 alone does not distinguish a temporary login/IP ban from a Host/Origin or provider proxy restriction. Avoid repeated password guesses; use the credentials shown by your provider.
+
+The login client supports both the legacy HTTP 200 / `Ok.` response and qBittorrent 5.2+ HTTP 204 with an empty body. It retains whichever session cookie the server issues, including `QBT_SID_<port>`, instead of assuming the cookie is named `SID`. Protected settings reads must still succeed before the backup proceeds. An unexpected empty HTTP 200 is not accepted as authenticated.
