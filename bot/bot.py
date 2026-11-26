@@ -569,7 +569,8 @@ class Bot:
         return {'inline_keyboard':[
             [{'text':'🔎 Search movie','callback_data':'global:search'},
              {'text':'📺 Search TV','callback_data':'global:tvsearch'}],
-            [{'text':'🎲 Random Movie','callback_data':'global:genres'}],
+            [{'text':'🎲 Random Movie','callback_data':'global:genres'},
+             {'text':'🎞 Find Similar Movie','callback_data':'global:similar'}],
             [{'text':'📥 Downloads','callback_data':'global:downloads:0'},
              {'text':'✅ Library','callback_data':'global:library:0'}],
             [{'text':'🗑 Delete a movie','callback_data':'global:manage:0'},
@@ -957,6 +958,83 @@ class Bot:
             pass
         return movie
 
+    def prompt_similar(self):
+        self.state.pop('recommend_return',None)
+        self.end_browse()
+        self.panel('🎞 Find Similar Movie\n\nWhich movie should I match? Send its name, and the year if you know it.',
+                   controls=self.back_controls(),view={'route':'similar_search'})
+
+    def confirm_similar_seed(self,movie,movies,index):
+        movie=self.selected_movie_metadata(movie)
+        self.session('similar_confirm',movie=movie,movies=movies,index=index)
+        text=(f"🎞 {movie['title']} ({movie.get('year','?')})\n\nIs this the correct movie?\n\n"
+              +(movie.get('overview') or 'No synopsis available.')[:550])
+        self.panel(text,[('✅ Yes, find similar','similaryes'),('❌ No, choose another','similarno')],
+                   movie=movie,view={'route':'similar_confirm'})
+
+    def choose_similar_mode(self,seed,movies=None,index=0):
+        self.session('similar_mode',movie=seed,movies=movies or [seed],index=index)
+        self.panel(f"🎞 {seed['title']} ({seed.get('year','?')})\n\nHow would you like the recommendations?\n\n"
+                   'Available downloads only: checks your indexers.\n'
+                   'Recommendations only: suggests films even when no download is available. '
+                   'Streaming-service availability is not checked.',
+                   [('📥 Available downloads only','similarmode:downloads'),
+                    ('🎬 Recommendations only','similarmode:any'),('‹ Back','similarseed')],movie=seed)
+
+    def similar_movies(self,seed,downloads_only=True):
+        from similar import related_ids,rank
+        self.panel('🎞 Finding movies similar to '+seed['title']+'…',
+                   controls=self.back_controls('global:similar'))
+        # This is the same read-only metadata route used by Radarr's SkyHookProxy.
+        # No movie is added, downloaded or marked monitored to obtain suggestions.
+        try:
+            data=request('https://api.radarr.video/v1/movie/'+str(int(seed['tmdbId'])),timeout=12)
+            ids=related_ids(data,seed['tmdbId'])
+        except (ServiceError,ValueError,TypeError):
+            self.session('similar_mode',movie=seed,movies=[seed],index=0)
+            self.panel('Related-film metadata could not be loaded. Try again in a moment.',
+                       [('Try again','similarmode:'+('downloads' if downloads_only else 'any')),
+                        ('Choose another movie','similarnew')],movie=seed)
+            return
+        if not ids:
+            self.panel('No related-film suggestions are available for this movie yet.',
+                       controls=self.back_controls('global:similar'))
+            return
+        excluded=set()
+        if downloads_only:
+            library=self.rad('movie');queued={q.get('movieId') for q in self.full_queue()}
+            excluded={m.get('tmdbId') for m in library if m.get('hasFile') or m.get('id') in queued or
+                      str(m.get('id')) in self.state['jobs'] or str(m.get('id')) in self.state['deletions']}
+        ids=[tid for tid in ids if tid not in excluded]
+        def resolve(tid):
+            try:
+                matches=self.rad('movie/lookup?'+urllib.parse.urlencode({'term':'tmdb:'+str(tid)}),timeout=10)
+                full=next((m for m in matches if m.get('tmdbId')==tid),None)
+                if not full or full.get('isExcluded') or (downloads_only and full.get('hasFile')):return None
+                if movie_year(full)>datetime.date.today().year:return None
+                if normal(full.get('status'))=='announced':return None
+                try:
+                    if full.get('inCinemas') and datetime.date.fromisoformat(full['inCinemas'][:10])>datetime.date.today():return None
+                except (ValueError,TypeError):pass
+                if any(normal(g)=='adult' for g in full.get('genres') or []):return None
+                return discovery_movie(full)
+            except (ServiceError,TypeError):return None
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            movies=[m for m in workers.map(resolve,ids[:20]) if m]
+        # Enrich the confirmed seed with the provider's exact keywords when Radarr
+        # returned a sparse lookup response. Never borrow data from another ID.
+        seed=dict(seed)
+        for key in ('genres','keywords','overview'):
+            if not seed.get(key):seed[key]=data.get(key,data.get(key[0].upper()+key[1:]))
+        deck=rank(seed,movies)
+        if not deck:
+            self.panel('No other released movies could be matched from these suggestions. Try another movie.',
+                       controls=self.back_controls('global:similar'))
+            return
+        self.session('recommend',mode='similar',seed=discovery_movie(seed),genre=None,deck=deck,index=0,
+                     downloads_only=downloads_only)
+        self.show_random_pick()
+
     def show_genres(self):
         self.end_browse()
         items = list(self.catalogue_genres().items())
@@ -1015,19 +1093,27 @@ class Bot:
     def show_random_pick(self, direction=1):
         s = self.state['session']
         s['verified_pick'] = False
+        similar = s.get('mode')=='similar'
+        heading = ('🎞 Similar to '+s['seed']['title']) if similar else '🎲 '+GENRES[s['genre']]
+        return_label = '‹ Choose another movie' if similar else '‹ Back to genres'
+        return_target = 'global:similar' if similar else 'global:genres'
+        recommendations_only = similar and not s.get('downloads_only',True)
         deadline = time.monotonic()+45
         attempts = 0
         while 0 <= s['index'] < len(s['deck']):
             movie = self.hydrate_pick(s['deck'][s['index']])
-            self.panel('🎲 '+GENRES[s['genre']]+'\n\nChecking for an eligible download…',
-                       controls=self.back_controls('global:genres'))
+            if recommendations_only:
+                s['verified_pick']=False
+                break
+            self.panel(heading+'\n\nChecking for an eligible download…',
+                       controls=self.back_controls(return_target))
             checked = movie.get('download_checked', 0)
             try:
                 available = (False if movie.get('community') and (not movie.get('hydrated') or movie.get('community_mismatch')) else
                              movie.get('download_available') if time.time()-checked<300 else self.search_releases(movie, probe=True))
             except ServiceError:
                 self.panel('Download availability could not be checked. Try again.',
-                           [('Try again','reccheck'), ('‹ Back to genres','recgenres')])
+                           [('Try again','reccheck'), (return_label,'recgenres')])
                 return
             movie.update(download_checked=time.time(), download_available=bool(available))
             s['deck'][s['index']] = movie
@@ -1038,11 +1124,11 @@ class Bot:
                 break
             next_index = s['index']+direction
             if not 0<=next_index<len(s['deck']) or attempts>=4 or time.monotonic()>=deadline:
-                choices = [('‹ Back to genres','recgenres')]
+                choices = [(return_label,'recgenres')]
                 if 0<=next_index<len(s['deck']):
                     choices.insert(0, ('Check more movies','recnext' if direction>0 else 'recprev'))
                 self.save()
-                self.panel('🎲 '+GENRES[s['genre']]+'\n\nNo eligible download found among the movies checked.', choices)
+                self.panel(heading+'\n\nNo eligible download found among the movies checked.', choices)
                 return
             s['index'] = next_index
             self.cleanup_previews()
@@ -1051,20 +1137,25 @@ class Bot:
         tomatoes,_ = rating(movie,'rottenTomatoes')
         rt = f'{tomatoes:g}%' if tomatoes else 'Not available'
         overview = movie.get('overview') or 'No synopsis available.'
-        overview = overview[:450]+('…' if len(overview)>450 else '')
+        overview_limit = 320 if similar else 450
+        overview = overview[:overview_limit]+('…' if len(overview)>overview_limit else '')
         imdb_text = f'{imdb:g}/10 · {votes:,} votes' if imdb else 'Not available'
-        text = (f"🎲 {GENRES[s['genre']]} · {s['index']+1}/{len(s['deck'])}\n\n"
+        text = (f"{heading} · {s['index']+1}/{len(s['deck'])}\n\n"
                 f"🎬 {movie['title']} ({movie.get('year','?')})\n\n"
                 f"⭐ IMDb {imdb_text}\n🍅 Rotten Tomatoes: {rt}\n\nAbout the movie\n{overview}\n\n"
-                + ('MDBList community list: '+movie.get('community_list','')+'\n'+movie.get('community_url','')+
+                + (('Why this matches\n'+'\n'.join(movie.get('similar_reasons',[]))+'\n'+('Download and streaming-service availability not checked.' if recommendations_only else
+                   'Eligible download checked on your indexers.')) if similar else
+                   'MDBList community list: '+movie.get('community_list','')+'\n'+movie.get('community_url','')+
                    '\nRatings and film details via Radarr.' if movie.get('community') else
                    'IMDb public catalogue · other details via Radarr.' if movie.get('catalogue') else 'Ratings via Radarr metadata; may lag.'))
-        choices = [('Find download','recselect')]
+        choices = [('Find download','recselect')] if not recommendations_only else []
         if s['index']>0:
             choices.append(('Previous','recprev'))
         if s['index']+1<len(s['deck']):
             choices.append(('Next','recnext'))
-        choices.append(('‹ Back to genres','recgenres'))
+        if similar:
+            choices.append(('Change recommendation mode','recmode'))
+        choices.append((return_label,'recgenres'))
         self.panel(text,choices,movie=movie,view={'route':'recommend'})
 
     def safe_movie(self, identity):
@@ -1417,6 +1508,8 @@ class Bot:
              button('Technical details', f'details:{selected}')],
             [{'text':'Main menu', 'callback_data':'global:home'}]
         ]}
+        if (self.state.get('recommend_return') or {}).get('mode')=='similar':
+            controls['inline_keyboard'].insert(-1,[button('‹ Back to similar movies','recback')])
         self.panel(text, movie=movie, controls=controls)
 
     def show_alternatives(self, page):
@@ -1561,7 +1654,7 @@ class Bot:
         with ThreadPoolExecutor(max_workers=4) as workers:
             return [movie for movie in workers.map(resolve, part_ids) if movie is not None]
 
-    def find_movies(self, query):
+    def find_movies(self, query, purpose=None):
         self.panel("🔎 Finding your movie…")
         found = {}
         terms = [query]
@@ -1583,11 +1676,16 @@ class Bot:
                 movies = complete
         candidates = ranked_movies(query, movies)
         if not candidates:
-            self.panel("No movie titles found. Try fewer words or correct the spelling.")
+            self.panel("No movie titles found. Try fewer words or correct the spelling.",
+                       controls=self.back_controls('global:similar' if purpose=='similar' else 'global:search'),
+                       view={'route':'similar_search'} if purpose=='similar' else None)
             return
         self.state['search_results'] = candidates
-        self.session('movie',movies=candidates)
-        self.show_search_results()
+        self.session('movie',movies=candidates,purpose=purpose)
+        if purpose=='similar':
+            self.confirm_similar_seed(candidates[0],candidates,0)
+        else:
+            self.show_search_results()
 
     def show_search_results(self, page=0):
         movies = self.state['session']['movies']
@@ -1604,7 +1702,10 @@ class Bot:
         except (ImportError, OSError):
             cover = None
         hint = 'Choose the title matching its cover.' if cover else 'Choose a movie below.'
-        self.panel('🎬 Which movie?\n'+hint, choices, cover=cover)
+        if self.state['session'].get('purpose')=='similar':
+            choices.append(('Type another movie name','similarnew'))
+        self.panel('🎬 Which movie?\n'+hint, choices, cover=cover,
+                   view={'route':'similar_results'} if self.state['session'].get('purpose')=='similar' else None)
 
     def selected_movie_metadata(self, movie):
         if poster_url(movie) and movie.get('overview'):
@@ -1692,6 +1793,9 @@ class Bot:
                            + release_search_summary(releases)+'\n\nRadarr’s upgrade and quality-profile rules still apply.',
                            movie=movie)
                 return
+            back_choice = (('‹ Back to similar movies','recback')
+                           if (self.state.get('recommend_return') or {}).get('mode')=='similar' else
+                           ('‹ Back to movie results','results'))
             self.session("watch_offer", movie=movie)
             self.panel(f"🎬 {movie['title']} ({movie.get('year','?')})\n\n"
                        + ((movie.get('overview') or '')[:200] + '\n\n' if movie.get('overview') else '')
@@ -1699,7 +1803,7 @@ class Bot:
                        + release_search_summary(releases) + '\n\n'
                        + 'Try another title/year if this is not the film you meant.\n\n'
                        + "Notify you when an eligible version appears? This won’t start a download.",
-                       [("Search again", "retry"), ("‹ Back to movie results", "results"),
+                       [("Search again", "retry"), back_choice,
                         ("Notify me when available", "watch"), ("Cancel", "cancel")],movie)
             return
         self.show_recommendation(movie, chosen, uhd)
@@ -1711,11 +1815,16 @@ class Bot:
             s['index'] = max(0,min(len(s['deck'])-1,s['index']+(1 if kind=='recnext' else -1)))
             self.save()
             self.show_random_pick(1 if kind=='recnext' else -1)
+        elif kind=='recmode' and s['stage']=='recommend' and s.get('mode')=='similar':
+            self.choose_similar_mode(s['seed'])
         elif kind=='reccheck' and s['stage']=='recommend':
             self.show_random_pick()
         elif kind=='recgenres' and s['stage']=='recommend':
-            self.show_genres()
+            if s.get('mode')=='similar':self.prompt_similar()
+            else:self.show_genres()
         elif kind=='recselect' and s['stage']=='recommend':
+            if s.get('mode')=='similar' and not s.get('downloads_only',True):
+                return
             if not s.get('verified_pick'):
                 self.show_random_pick()
                 return
@@ -1730,9 +1839,25 @@ class Bot:
         elif kind=='recback' and self.state.get('recommend_return'):
             saved = self.state['recommend_return']
             self.end_browse()
-            self.session('recommend',genre=saved['genre'],deck=saved['deck'],index=saved['index'])
+            self.session('recommend',genre=saved['genre'],deck=saved['deck'],index=saved['index'],
+                         mode=saved.get('mode'),seed=saved.get('seed'),downloads_only=saved.get('downloads_only',True))
             self.show_random_pick()
+        elif kind=='similaryes' and s['stage']=='similar_confirm':
+            self.choose_similar_mode(s['movie'],s['movies'],s.get('index',0))
+        elif kind=='similarseed' and s['stage']=='similar_mode':
+            self.confirm_similar_seed(s['movie'],s['movies'],s.get('index',0))
+        elif kind=='similarmode' and s['stage']=='similar_mode' and number in ('downloads','any'):
+            self.similar_movies(s['movie'],downloads_only=number=='downloads')
+        elif kind=='similarno' and s['stage']=='similar_confirm':
+            self.session('movie',movies=s['movies'],purpose='similar')
+            self.show_search_results()
+        elif kind=='similarnew':
+            self.prompt_similar()
         elif kind == "movie" and s["stage"] == "movie":
+            if s.get('purpose')=='similar':
+                index=int(number)
+                self.confirm_similar_seed(s['movies'][index],s['movies'],index)
+                return
             movie = self.selected_movie_metadata(s["movies"][int(number)])
             self.state["session"] = None
             self.save()
@@ -1864,6 +1989,9 @@ class Bot:
         if cb:
             self.tg("answerCallbackQuery", {"callback_query_id": cb["id"]})
             data = cb.get("data","")
+            if data=='global:similar':
+                self.prompt_similar()
+                return
             if data=='global:genres':
                 self.show_genres()
                 return
@@ -1983,6 +2111,13 @@ class Bot:
                     self.tg('deleteMessage', {'chat_id':self.chat,'message_id':message['message_id']})
                 except ServiceError:
                     pass
+        elif (self.state.get('view') or {}).get('route') in ('similar_search','similar_results','similar_confirm') and not text.startswith('/'):
+            if not 2<=len(text)<=150:
+                self.say('Send a movie title between 2 and 150 characters.')
+                return
+            self.state.pop('recommend_return',None)
+            self.end_browse()
+            self.find_movies(text,purpose='similar')
         elif (self.state.get('view') or {}).get('route') in ('delete_search','delete_results') and not text.startswith('/'):
             self.search_delete(text)
         elif text.startswith("/"):

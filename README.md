@@ -168,3 +168,13 @@ media-server backup --qbit-url https://YOUR_QBIT_WEBUI_HOST
 Enter the existing qBittorrent WebUI username/password at the prompts, not in the command. This does not change Radarr's saved connection or qBittorrent's settings. Authentication and settings reads must succeed before the backup begins. HTTP 403 alone does not distinguish a temporary login/IP ban from a Host/Origin or provider proxy restriction. Avoid repeated password guesses; use the credentials shown by your provider.
 
 The login client supports both the legacy HTTP 200 / `Ok.` response and qBittorrent 5.2+ HTTP 204 with an empty body. It retains whichever session cookie the server issues, including `QBT_SID_<port>`, instead of assuming the cookie is named `SID`. Protected settings reads must still succeed before the backup proceeds. An unexpected empty HTTP 200 is not accepted as authenticated.
+
+## Find Similar Movie in Telegram
+
+The main menu places **Random Movie** on the left and **Find Similar Movie** on the right of the same row. Enter a film title (optionally its year), check the title/year and poster, then choose **Yes** or **No**. No returns to the matching-title list; every new selection needs confirmation.
+
+After Yes, choose **Available downloads only** or **Recommendations only**. The latter does not probe indexers, read the download queue or create Radarr preview entries, and does not show a download button. It is useful when choosing films to watch elsewhere; it does **not** verify Netflix or other streaming catalogues. Available-download mode checks the existing size/quality/seeder rules before showing a suggestion and still requires the normal explicit download confirmation.
+
+Related titles come from the exact seed movie ID in Radarr's public metadata service, then are ranked by shared genres, keywords/themes and synopsis text. This is a shared content-based feature, not a profile built from viewing history. It needs no new API key. A title is not treated as part of a collection merely because its name matches. The recommendations retain their original release years and posters, include a short match explanation, and support Next/Previous, changing mode and choosing another seed. No related data or an unavailable metadata service produces a clear message rather than unrelated random films.
+
+Run `update-live` on the existing installation, send `/start`, then open **Find Similar Movie**. Take a fresh `media-server backup` after updating if migrating. Native services, disk layout, paths and backup format are unchanged by this bot feature. Live download availability still depends on your configured indexers.

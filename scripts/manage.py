@@ -146,13 +146,13 @@ def deploy_bot(cfg, start=True):
         directory.chmod(0o700)
         os.chown(directory, cfg['uid'], cfg['gid'])
     # Compile before stopping the installed bot. Download, watch and deletion ledgers survive.
-    for name in ('bot.py', 'catalog.py', 'year_adapter.py', 'search_art.py', 'community.py'):
+    for name in ('bot.py', 'catalog.py', 'year_adapter.py', 'search_art.py', 'community.py', 'similar.py'):
         source = (REPO / 'bot' / name).read_text()
         compile(source, name, 'exec')
     was_running = active('media-request-bot.service')
     if was_running:
         run(['systemctl', 'stop', 'media-request-bot.service'])
-    for name in ('bot.py', 'catalog.py', 'year_adapter.py', 'search_art.py', 'community.py'):
+    for name in ('bot.py', 'catalog.py', 'year_adapter.py', 'search_art.py', 'community.py', 'similar.py'):
         if (target / name).exists():
             shutil.copy2(target / name, target / (name + '.previous'))
         atomic(target / name, (REPO / 'bot' / name).read_text())
